@@ -76,7 +76,6 @@ def check_and_install_dependencies():
     
 def start_backend() -> subprocess.Popen:
     print("⚡ 正在唤醒底层铁壁 (Backend)...")
-    log_file = open(LOGS_DIR / "backend.log", "w", encoding="utf-8")
     
     # 根据系统判断 python 执行文件
     python_exec = sys.executable
@@ -89,10 +88,10 @@ def start_backend() -> subprocess.Popen:
         [python_exec, "backend/main.py"],
         cwd=WORKSPACE_DIR,
         env=env,
-        stdout=log_file,
+        stdout=None, # 直接抛出到终端，暴露语法错误
         stderr=subprocess.STDOUT
     )
-    print(f"✓ Backend 已点火 (PID: {proc.pid}) -> 日志: logs/backend.log")
+    print(f"✓ Backend 已点火 (PID: {proc.pid}) -> 终端直出报错")
     return proc
 
 def start_frontend() -> subprocess.Popen:
