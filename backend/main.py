@@ -32,7 +32,10 @@ async def lifespan(app: FastAPI):
     
     # 启动引擎与加载账号
     await app.state.account_pool.load()
-    asyncio.create_task(app.state.browser_engine.start())
+    
+    # 阻塞式启动：只有等所有的 browser page 完全初始化完毕后，API 才会开始提供服务
+    await app.state.browser_engine.start()
+    
     asyncio.create_task(garbage_collect_chats(app.state.qwen_client))
     
     yield
