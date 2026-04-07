@@ -182,7 +182,7 @@ def parse_tool_calls(answer: str, tools: list):
     if answer.strip() and tools:
         lower_ans = answer.lower()
         # 匹配明确的工具调用意图词
-        intent_keywords = ["tool", "工具", "调用", "执行", "read", "write", "grep", "bash", "glob"]
+        intent_keywords = ["tool", "工具", "调用", "执行", "read", "write", "grep", "bash", "glob", "search"]
         
         found_intent = False
         # 只有在明确提到“使用/调用 xxx 工具/命令”时才拦截，避免普通对话被误杀
@@ -201,7 +201,7 @@ def parse_tool_calls(answer: str, tools: list):
             if not fallback_name:
                 fallback_name = next(iter(tool_names)) if tool_names else "unknown"
             
-            return _make_tool_block(fallback_name, {"_error": "You MUST use ✿ACTION✿ syntax to call tools. Direct text or JSON is invalid. PLEASE RETRY."})
+            return _make_tool_block(fallback_name, {"_error": "You MUST use ✿ACTION✿ syntax to call tools. Direct text or JSON is invalid. PLEASE RETRY. 必须使用 ✿ACTION✿ 格式调用工具。"})
 
     log.warning(f"[ToolParse] ✗ 未检测到工具调用，作为普通文本返回。工具列表: {tool_names}")
     
@@ -220,6 +220,8 @@ def inject_format_reminder(prompt: str, tool_name: str) -> str:
         f"DO NOT use JSON without delimiters. DO NOT use any XML tags. ONLY ✿ACTION✿.\n"
     )
     prompt = prompt.rstrip()
-    if prompt.endswith("Assistant:"):
-        return prompt[: -len("Assistant:")] + reminder + "\nAssistant:"
-    return prompt + "\n\n" + reminder + "\nAssistant:"
+    if prompt.endswith("Assistant: <think>"):
+        return prompt[:-18] + reminder + "\nAssistant: <think>\n"
+    elif prompt.endswith("Assistant:"):
+        return prompt[:-10] + reminder + "\nAssistant: <think>\n"
+    return prompt + "\n\n" + reminder + "\nAssistant: <think>\n"

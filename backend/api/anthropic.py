@@ -139,7 +139,17 @@ async def anthropic_messages(request: Request):
                         if chat_id:
                             import asyncio
                             asyncio.create_task(client.delete_chat(acc.token, chat_id))
-                    current_prompt += "\n\n[IMPORTANT: You MUST respond with a tool call using ✿ACTION✿ format. Do NOT just think silently.]\n\nAssistant:"
+                    
+                    # 避免在末尾重复累加多次 <think> 提醒
+                    if current_prompt.endswith("Assistant: <think>\n"):
+                        current_prompt = current_prompt[:-19]
+                    elif current_prompt.endswith("Assistant:"):
+                        current_prompt = current_prompt[:-10]
+                        
+                    # 使用更加强烈的中文+英文双语提醒，并且直接替换结尾
+                    reminder = "\n\n【IMPORTANT: You MUST respond with a tool call using ✿ACTION✿ format. Do NOT just think silently. 必须输出✿ACTION✿格式工具调用！】\n\nAssistant: <think>\n"
+                    current_prompt += reminder
+                        
                     import asyncio
                     await asyncio.sleep(0.5)
                     continue

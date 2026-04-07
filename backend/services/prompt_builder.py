@@ -121,7 +121,7 @@ def build_prompt_with_tools(messages: list, tools: list) -> str:
     history_parts = []
     used = 0
     NEEDSREVIEW_MARKERS = ("需求回显", "已了解规则", "等待用户输入", "待执行任务", "待确认事项",
-                           "[需求回显]", "**需求回显**")
+                           "[需求回显]", "**需求回显**", "【IMPORTANT: You MUST respond")
     msg_count = 0
     
     for msg in reversed(messages):
@@ -175,6 +175,12 @@ def build_prompt_with_tools(messages: list, tools: list) -> str:
             msg_count += 1
             continue
             
+        # 跳过旧的自动重试提醒，防止无限累积导致 prompt 越来越长
+        if tools and role == "user" and "【IMPORTANT: You MUST respond" in text:
+            msg_count += 1
+            continue
+
+        # 将用户的消息标记，诱导其强制思考
         is_tool_result = role == "user" and ("[Tool Result]" in text or "[tool result]" in text.lower()
                                               or text.startswith("{") or "\"results\"" in text[:100])
         max_len = 30000 if is_tool_result else 80000
@@ -206,9 +212,10 @@ def build_prompt_with_tools(messages: list, tools: list) -> str:
     if tools:
         parts.append(
             "[REMINDER: When calling a tool, you MUST use ✿ACTION✿{\"action\": \"NAME\", \"args\": {...}}✿END_ACTION✿ format. "
+            "You are a highly capable agent. Use <think> to reason about the user's intent and the tools available to you before answering. "
             "DO NOT use any other format.]"
         )
         
-    parts.append("Assistant:")
+    parts.append("Assistant: <think>\n")
     return "\n\n".join(parts)
 
