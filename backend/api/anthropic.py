@@ -77,7 +77,7 @@ async def anthropic_messages(request: Request):
         
         for stream_attempt in range(5): # MAX_RETRIES
             try:
-                events, chat_id, acc = await client.chat_stream_events_with_retry(resolved_model, current_prompt)
+                events, chat_id, acc = await client.chat_stream_events_with_retry(model, current_prompt)
                 
                 # Buffer all events
                 thinking_chunks = []
@@ -122,7 +122,7 @@ async def anthropic_messages(request: Request):
                 input_usage = len(current_prompt) # simple char len approx or precise
                 
                 msg_id = f"msg_{uuid.uuid4().hex[:12]}"
-                yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': resolved_model, 'stop_reason': None, 'usage': {'input_tokens': input_usage, 'output_tokens': 0}}})}\n\n"
+                yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model, 'stop_reason': None, 'usage': {'input_tokens': input_usage, 'output_tokens': 0}}})}\n\n"
 
                 block_idx = 0
 
