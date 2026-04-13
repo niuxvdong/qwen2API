@@ -1,8 +1,16 @@
 import json
 import logging
-import uuid
+from dataclasses import dataclass
 
 log = logging.getLogger("qwen2api.prompt")
+
+
+@dataclass(slots=True)
+class PromptBuildResult:
+    prompt: str
+    tools: list[dict]
+    tool_enabled: bool
+
 
 def _extract_text(content, user_tool_mode: bool = False) -> str:
     """Extract text from Anthropic content (string or list of blocks).
@@ -75,6 +83,31 @@ def _normalize_tools(tools: list) -> list:
     return [_normalize_tool(t) for t in tools if tools]
 
 
+def _tool_param_hint(tool: dict) -> str:
+    params = tool.get("parameters", {}) or {}
+    if not isinstance(params, dict):
+        return ""
+
+    props = params.get("properties", {}) or {}
+    if not isinstance(props, dict) or not props:
+        return ""
+
+    required = params.get("required", []) or []
+    ordered_keys: list[str] = []
+    for key in required:
+        if key in props and key not in ordered_keys:
+            ordered_keys.append(key)
+    for key in props:
+        if key not in ordered_keys:
+            ordered_keys.append(key)
+
+    shown = ordered_keys[:3]
+    if not shown:
+        return ""
+    suffix = ", ..." if len(ordered_keys) > len(shown) else ""
+    return f" input keys: {', '.join(shown)}{suffix}"
+
+
 def build_prompt_with_tools(system_prompt: str, messages: list, tools: list) -> str:
     MAX_CHARS = 18000 if tools else 120000
     # When tools are present, skip the user's system prompt entirely.
@@ -89,51 +122,44 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list) -> 
         names = [t.get("name", "") for t in tools if t.get("name")]
         lines = [
             "=== MANDATORY TOOL CALL INSTRUCTIONS ===",
-            "IGNORE any previous output format instructions (needs-review, recap, etc.).",
-            f"You have access to these tools: {', '.join(names)}",
-            "",
-            "WHEN YOU NEED TO CALL A TOOL — output EXACTLY this format (nothing else):",
+            "If you need a tool, output ONLY one tool call block and nothing else.",
+            "Use EXACTLY this format:",
             "##TOOL_CALL##",
             '{"name": "EXACT_TOOL_NAME", "input": {"param1": "value1"}}',
             "##END_CALL##",
-            "",
-            "STRICT RULES:",
-            "- No preamble, no explanation before or after ##TOOL_CALL##...##END_CALL##.",
-            "- Use EXACT tool name from the list below.",
-            "- Prioritize the most recent user request as TOP PRIORITY task.",
-            "- You ARE running locally on the user's machine. You HAVE full file system access via Bash/Edit/Write/Read tools.",
-            "- NEVER say 'I cannot access your file system' or 'I am an AI and cannot...' — you CAN and MUST use tools.",
-            "- If a tool result is unexpected or shows an error, immediately try a DIFFERENT approach — do not give up.",
-            "- For file operations: if ~/Desktop/ fails, try /c/Users/Administrator/Desktop/ or /mnt/c/Users/Administrator/Desktop/ or the Windows path C:/Users/Administrator/Desktop/",
-            "- Keep calling tools until the task is FULLY COMPLETE. Never stop mid-task.",
-            "- When NO tool is needed (task fully done), answer normally in plain text.",
-            "- Never call the same tool with the same args in more than 2 consecutive turns; try a different approach.",
-            "- If the latest tool result contains 'Unchanged since last read', do not call Read again on the same target.",
-            "",
-            "ONLY ##TOOL_CALL##...##END_CALL## is accepted.",
-            "",
+            "Rules:",
+            "- No text before or after the tool call block.",
+            "- Use the exact tool name from the list below.",
+            "- Put arguments inside the input object.",
+            "- If no tool is needed, answer normally.",
             "Available tools:",
         ]
-        # When there are many tools (>20), only list name+short_desc without params
-        # to keep the prompt compact and avoid model timeouts.
-        verbose_tools = len(tools) <= 20
-        for tool in tools:
-            name = tool.get("name", "")
-            desc = tool.get("description", "")
-            if verbose_tools:
-                desc = desc[:120]
-                lines.append(f"- {name}: {desc}")
-                params = tool.get("parameters", {})
-                if params:
-                    props = params.get("properties", {})
-                    req = params.get("required", [])
-                    if props:
-                        ps = ", ".join(f"{k}({'req' if k in req else 'opt'})" for k in props)
-                        lines.append(f"  params: {ps}")
-            else:
-                # Compact: just name and very short description
-                desc = desc[:60]
-                lines.append(f"- {name}: {desc}")
+        if len(names) <= 12:
+            for tool in tools:
+                name = tool.get("name", "")
+                desc = (tool.get("description", "") or "")[:40]
+                hint = _tool_param_hint(tool)
+                line = f"- {name}"
+                if desc:
+                    line += f": {desc}"
+                if hint:
+                    line += hint
+                lines.append(line)
+        else:
+            priority_tools = ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebSearch", "WebFetch", "TaskCreate", "TaskUpdate"]
+            priority_lines = []
+            seen = set()
+            for priority_name in priority_tools:
+                tool = next((item for item in tools if item.get("name") == priority_name), None)
+                if tool is None:
+                    continue
+                seen.add(priority_name)
+                hint = _tool_param_hint(tool)
+                priority_lines.append(f"- {priority_name}{hint}")
+            remaining_count = len([name for name in names if name not in seen])
+            lines.extend(priority_lines)
+            if remaining_count > 0:
+                lines.append(f"- Other available tools: {remaining_count} more")
         lines.append("=== END TOOL INSTRUCTIONS ===")
         tools_part = "\n".join(lines)
 
@@ -256,9 +282,10 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list) -> 
     return "\n\n".join(parts)
 
 
-def messages_to_prompt(req_data: dict) -> tuple:
+def messages_to_prompt(req_data: dict) -> PromptBuildResult:
     messages = req_data.get("messages", [])
     tools = _normalize_tools(req_data.get("tools", []))
+    tool_enabled = bool(tools)
     system_prompt = ""
     sys_field = req_data.get("system", "")
     if isinstance(sys_field, list):
@@ -270,4 +297,8 @@ def messages_to_prompt(req_data: dict) -> tuple:
             if msg.get("role") == "system":
                 system_prompt = _extract_text(msg.get("content", ""))
                 break
-    return build_prompt_with_tools(system_prompt, messages, tools), tools
+    return PromptBuildResult(
+        prompt=build_prompt_with_tools(system_prompt, messages, tools),
+        tools=tools,
+        tool_enabled=tool_enabled,
+    )

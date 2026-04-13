@@ -224,6 +224,7 @@ class AccountPool:
         activation_pending = [a for a in self.accounts if a.get_status_code() == "pending_activation"]
         banned = [a for a in self.accounts if a.get_status_code() == "banned"]
         in_use = sum(a.inflight for a in self.accounts)
+        account_min_interval_ms = getattr(settings, "ACCOUNT_MIN_INTERVAL_MS", 0)
         return {
             "total": len(self.accounts),
             "valid": len(available),
@@ -234,5 +235,5 @@ class AccountPool:
             "in_use": in_use,
             "max_inflight": self.max_inflight,
             "waiting": len(self._waiters),
-            "account_min_interval_ms": settings.ACCOUNT_MIN_INTERVAL_MS,
+            "account_min_interval_ms": account_min_interval_ms,
         }
