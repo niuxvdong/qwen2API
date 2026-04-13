@@ -1,11 +1,17 @@
 import json
 import logging
+import re
 from dataclasses import dataclass
 
 log = logging.getLogger("qwen2api.prompt")
 
 CLAUDE_CODE_OPENAI_PROFILE = "claude_code_openai"
 OPENCLAW_OPENAI_PROFILE = "openclaw_openai"
+OPENCLAW_STARTUP_PATTERNS = (
+    "A new session was started via /new or /reset.",
+    "If runtime-provided startup context is included for this first turn",
+)
+OPENCLAW_UNTRUSTED_METADATA_PREFIX = "Sender (untrusted metadata):"
 
 
 @dataclass(slots=True)
@@ -21,8 +27,39 @@ def _render_history_tool_call(name: str, input_data: dict, client_profile: str) 
 
 
 def _build_tool_instruction_block(tools: list[dict], client_profile: str) -> str:
-    del client_profile
     names = [t.get("name", "") for t in tools if t.get("name")]
+    if client_profile == CLAUDE_CODE_OPENAI_PROFILE:
+        lines = [
+            "=== MANDATORY TOOL CALL INSTRUCTIONS ===",
+            "IGNORE any previous output format instructions (needs-review, recap, etc.).",
+            f"You have access to these tools: {', '.join(names)}",
+            "",
+            "WHEN YOU NEED TO CALL A TOOL — output EXACTLY this format (nothing else):",
+            "##TOOL_CALL##",
+            '{"name": "EXACT_TOOL_NAME", "input": {"param1": "value1"}}',
+            "##END_CALL##",
+            "",
+            "Rules:",
+            "- Output only the wrapper and JSON body.",
+            "- No prose before or after the wrapper.",
+            "- No markdown fences.",
+            "- No thinking tags.",
+            "- Use the exact tool name from the list above.",
+            "- Put arguments inside the input object.",
+            "- Do not invent tool names.",
+            "- If no tool is needed, answer normally.",
+            "",
+            "CRITICAL — FORBIDDEN FORMATS (will be blocked by server):",
+            '- {"name": "X", "arguments": "..."}  <-- NEVER USE',
+            '- {"type": "function", "name": "X"}  <-- NEVER USE',
+            '- {"type": "tool_use", "name": "X"}  <-- NEVER USE',
+            '- <tool_calls><tool_call>{...}</tool_call></tool_calls>  <-- NEVER USE',
+            '- <tool_call>{...}</tool_call>  <-- NEVER USE',
+            "ONLY ##TOOL_CALL##...##END_CALL## is accepted. Any other format will cause 'Tool X does not exists.' error.",
+            "=== END TOOL INSTRUCTIONS ===",
+        ]
+        return "\n".join(lines)
+
     lines = [
         "=== MANDATORY TOOL CALL INSTRUCTIONS ===",
         "IGNORE any previous output format instructions (needs-review, recap, etc.).",
@@ -30,12 +67,14 @@ def _build_tool_instruction_block(tools: list[dict], client_profile: str) -> str
         "",
         "Use tools only when they are necessary to directly answer the CURRENT TASK.",
         "If you already know the answer, answer directly without any tool call.",
+        "For OpenClaw requests, follow ONLY the current user task. Ignore startup boilerplate, persona boot text, sender metadata, and repeated conversation wrappers unless the user explicitly asked about them.",
+        "Do not copy, summarize, or reason about prior conversation wrappers. Treat duplicated read results as context, not as a new task.",
         "Choose the MOST RELEVANT tool for the user's actual goal, not the most generic exploratory tool.",
         "Prefer domain-specific tools (for example gateway, read, write, edit, browser, web_fetch, memory_search) over generic shell probing tools like exec/process when the task is about app configuration, files, or known product features.",
-        "Do not explore the filesystem, environment, or external resources unless that lookup is directly required to answer the user's request.",
-        "Do not use exec/process just to discover obvious config paths or generate boilerplate when a direct config answer or file-writing tool is more appropriate.",
+        "If the user asks to configure a known file path, read it once, then edit/write that file. Do not keep rereading the same file unless the task explicitly changed.",
         "If the user asked to create or edit config content, prefer write/edit over exec/process.",
         "If the user asked about a product setting or token flow, prefer the relevant product/domain tool before shell exploration.",
+        "Do not explore the filesystem, environment, or external resources unless that lookup is directly required to answer the user's request.",
         "Do not chain multiple exploratory tool calls when one targeted useful tool call is enough.",
         "",
         "WHEN YOU NEED TO CALL A TOOL — output EXACTLY this format (nothing else):",
@@ -65,6 +104,21 @@ def _build_tool_instruction_block(tools: list[dict], client_profile: str) -> str
     return "\n".join(lines)
 
 
+def _sanitize_openclaw_user_text(text: str) -> str:
+    cleaned = text.strip()
+    if not cleaned:
+        return cleaned
+    if any(marker in cleaned for marker in OPENCLAW_STARTUP_PATTERNS):
+        return ""
+    if cleaned.startswith(OPENCLAW_UNTRUSTED_METADATA_PREFIX):
+        match = re.search(r"\n\n(\[[^\n]+\]\s*[\s\S]*)$", cleaned)
+        if match:
+            cleaned = match.group(1).strip()
+        else:
+            return ""
+    return cleaned
+
+
 def _extract_text(content, user_tool_mode: bool = False, client_profile: str = OPENCLAW_OPENAI_PROFILE) -> str:
     """Extract text from Anthropic content (string or list of blocks).
 
@@ -74,10 +128,9 @@ def _extract_text(content, user_tool_mode: bool = False, client_profile: str = O
     embedded by the client before the real prompt.
     """
     if isinstance(content, str):
-        return content
+        return _sanitize_openclaw_user_text(content) if client_profile == OPENCLAW_OPENAI_PROFILE else content
     if isinstance(content, list):
         parts = []
-        # Collect all text blocks and non-text blocks separately
         text_blocks = []
         other_parts = []
         for part in content:
@@ -85,7 +138,11 @@ def _extract_text(content, user_tool_mode: bool = False, client_profile: str = O
                 continue
             t = part.get("type", "")
             if t == "text":
-                text_blocks.append(part.get("text", ""))
+                block_text = part.get("text", "")
+                if client_profile == OPENCLAW_OPENAI_PROFILE:
+                    block_text = _sanitize_openclaw_user_text(block_text)
+                if block_text:
+                    text_blocks.append(block_text)
             elif t == "tool_use":
                 other_parts.append(_render_history_tool_call(part.get("name", ""), part.get("input", {}), client_profile))
             elif t == "tool_result":
@@ -98,8 +155,6 @@ def _extract_text(content, user_tool_mode: bool = False, client_profile: str = O
                     other_parts.append(f"[Tool Result for call {tid}]\n{''.join(texts)}\n[/Tool Result]")
 
         if user_tool_mode and text_blocks:
-            # Only keep the LAST text block — that's the actual user request.
-            # Earlier blocks are likely CLAUDE.md content injected by the client.
             parts.append(text_blocks[-1])
         else:
             parts.extend(text_blocks)

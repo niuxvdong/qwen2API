@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, cast
 
 from backend.adapter.standard_request import StandardRequest
 from backend.core.config import settings
@@ -212,6 +212,8 @@ def tool_identity(tool_name: str, tool_input: Any = None) -> str:
     try:
         if tool_name == "Read" and isinstance(tool_input, dict):
             return f"Read::{tool_input.get('file_path', '').strip()}"
+        if tool_name == "read" and isinstance(tool_input, dict):
+            return f"read::{tool_input.get('path', '').strip()}"
         return f"{tool_name}::{json.dumps(tool_input or {}, ensure_ascii=False, sort_keys=True)}"
     except Exception:
         return tool_name or ""
@@ -240,6 +242,27 @@ def recent_same_tool_identity_count(messages: list[dict[str, Any]] | None, tool_
             continue
         break
     return count
+
+
+def has_recent_openai_same_tool_call(history_messages: list[dict[str, Any]] | None, tool_name: str, tool_input: Any = None) -> bool:
+    target = tool_identity(tool_name, tool_input)
+    for msg in reversed(history_messages or []):
+        if msg.get("role") != "assistant":
+            continue
+        tool_calls = msg.get("tool_calls")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            continue
+        if len(tool_calls) != 1:
+            return False
+        fn = tool_calls[0].get("function", {}) if isinstance(tool_calls[0], dict) else {}
+        name = fn.get("name", "")
+        raw_args = fn.get("arguments", "{}")
+        try:
+            parsed_args = json.loads(raw_args) if isinstance(raw_args, str) and raw_args else raw_args
+        except (json.JSONDecodeError, ValueError):
+            parsed_args = {"raw": raw_args}
+        return tool_identity(name, parsed_args) == target
+    return False
 
 
 def native_tool_calls_to_markup(tool_calls: list[dict[str, Any]]) -> str:
@@ -477,11 +500,12 @@ def evaluate_retry_directive(
     state: RuntimeAttemptState,
     allow_after_visible_output: bool = False,
 ) -> RuntimeRetryDirective:
+    typed_request = cast(StandardRequest, request)
     if attempt_index >= max_attempts - 1:
         return RuntimeRetryDirective(retry=False, next_prompt=current_prompt)
 
-    if state.blocked_tool_names and request.tools:
-        blocked_name = normalize_tool_name_for_retry(state.blocked_tool_names[0], request.tool_names)
+    if state.blocked_tool_names and typed_request.tools:
+        blocked_name = normalize_tool_name_for_retry(state.blocked_tool_names[0], typed_request.tool_names)
         force_text = (
             f"[MANDATORY NEXT STEP]: The server blocked tool '{blocked_name}' with 'Tool {blocked_name} does not exists.'. "
             "Retry immediately using ONLY ##TOOL_CALL## format and nothing else:\n"
@@ -498,14 +522,36 @@ def evaluate_retry_directive(
             next_prompt=tool_parser.inject_format_reminder(
                 current_prompt,
                 blocked_name,
-                client_profile=request.client_profile,
             ),
         )
 
-    if request.tools and state.answer_text:
-        directive = parse_tool_directive_once(request, state)
+    if typed_request.tools and state.answer_text:
+        directive = parse_tool_directive_once(typed_request, state)
         if directive.stop_reason == "tool_use":
             first_tool = next((b for b in directive.tool_blocks if b.get("type") == "tool_use"), None)
+            if first_tool:
+                repeated_same_tool = False
+                if getattr(typed_request, "client_profile", "openclaw_openai") == "openclaw_openai":
+                    repeated_same_tool = has_recent_openai_same_tool_call(
+                        history_messages,
+                        first_tool.get("name", ""),
+                        first_tool.get("input", {}),
+                    )
+                else:
+                    repeated_same_tool = recent_same_tool_identity_count(
+                        history_messages,
+                        first_tool.get("name", ""),
+                        first_tool.get("input", {}),
+                    ) >= 1
+                if repeated_same_tool and not state.emitted_visible_output:
+                    force_text = (
+                        f"[MANDATORY NEXT STEP]: You already called {first_tool.get('name')} with the same input. "
+                        "Do NOT repeat the same tool call. "
+                        "Use the tool result you already have and either choose the next relevant tool or finish the task. "
+                        "If this is a config-file task, read once and then edit/write the file instead of rereading it."
+                    )
+                    next_prompt = inject_assistant_message(current_prompt, force_text)
+                    return RuntimeRetryDirective(retry=True, next_prompt=next_prompt)
             if (
                 first_tool
                 and first_tool.get("name") == "Read"
