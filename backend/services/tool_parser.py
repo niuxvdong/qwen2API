@@ -305,24 +305,16 @@ def _parse_tool_calls(answer: str, tools: list, *, emit_logs: bool):
 def inject_format_reminder(prompt: str, tool_name: str, *, client_profile: str = "openclaw_openai") -> str:
     """Inject a format correction reminder into the prompt before the final 'Assistant:' tag.
     Used when Qwen server returns 'Tool X does not exists.' (native call was intercepted)."""
-    if client_profile == "claude_code_openai":
-        reminder = (
-            f"[CORRECTION]: You called '{tool_name}' using the WRONG format — "
-            f"the server BLOCKED it with 'Tool {tool_name} does not exists.'. "
-            f"You MUST use ##TOOL_CALL## format and NOTHING ELSE:\n"
-            f"##TOOL_CALL##\n"
-            f'{{"name": {json.dumps(tool_name)}, "input": {{...your args here...}}}}\n'
-            f"##END_CALL##\n"
-            f"DO NOT use JSON without delimiters. DO NOT use any XML tags. ONLY ##TOOL_CALL##.\n"
-        )
-    else:
-        reminder = (
-            f"[CORRECTION]: You called '{tool_name}' using the WRONG format — "
-            f"the server BLOCKED it with 'Tool {tool_name} does not exists.'. "
-            f"You MUST use a single XML tool call block and NOTHING ELSE:\n"
-            f"<tool_call>{{\"name\": {json.dumps(tool_name)}, \"input\": {{...your args here...}}}}</tool_call>\n"
-            f"DO NOT use bare JSON. DO NOT use ##TOOL_CALL## wrappers. ONLY <tool_call>...</tool_call>.\n"
-        )
+    del client_profile
+    reminder = (
+        f"[CORRECTION]: You called '{tool_name}' using the WRONG format — "
+        f"the server BLOCKED it with 'Tool {tool_name} does not exists.'. "
+        f"You MUST use ##TOOL_CALL## format and NOTHING ELSE:\n"
+        f"##TOOL_CALL##\n"
+        f'{{"name": {json.dumps(tool_name)}, "input": {{...your args here...}}}}\n'
+        f"##END_CALL##\n"
+        f"DO NOT use JSON without delimiters. DO NOT use any XML tags. ONLY ##TOOL_CALL##.\n"
+    )
     prompt = prompt.rstrip()
     if prompt.endswith("Assistant:"):
         return prompt[: -len("Assistant:")] + reminder + "\nAssistant:"

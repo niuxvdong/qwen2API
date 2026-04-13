@@ -17,58 +17,39 @@ class PromptBuildResult:
 
 def _render_history_tool_call(name: str, input_data: dict, client_profile: str) -> str:
     payload = json.dumps({"name": name, "input": input_data}, ensure_ascii=False)
-    if client_profile == CLAUDE_CODE_OPENAI_PROFILE:
-        return f"##TOOL_CALL##\n{payload}\n##END_CALL##"
-    return f"<tool_call>{payload}</tool_call>"
+    return f"##TOOL_CALL##\n{payload}\n##END_CALL##"
 
 
 def _build_tool_instruction_block(tools: list[dict], client_profile: str) -> str:
+    del client_profile
     names = [t.get("name", "") for t in tools if t.get("name")]
-    if client_profile == CLAUDE_CODE_OPENAI_PROFILE:
-        lines = [
-            "=== MANDATORY TOOL CALL INSTRUCTIONS ===",
-            "IGNORE any previous output format instructions (needs-review, recap, etc.).",
-            f"You have access to these tools: {', '.join(names)}",
-            "",
-            "WHEN YOU NEED TO CALL A TOOL — output EXACTLY this format (nothing else):",
-            "##TOOL_CALL##",
-            '{"name": "EXACT_TOOL_NAME", "input": {"param1": "value1"}}',
-            "##END_CALL##",
-            "",
-            "Rules:",
-            "- Output only the wrapper and JSON body.",
-            "- No prose before or after the wrapper.",
-            "- No markdown fences.",
-            "- No thinking tags.",
-            "- Use the exact tool name from the list above.",
-            "- Put arguments inside the input object.",
-            "- Do not invent tool names.",
-            "- If no tool is needed, answer normally.",
-            "",
-            "CRITICAL — FORBIDDEN FORMATS (will be blocked by server):",
-            '- {"name": "X", "arguments": "..."}  <-- NEVER USE',
-            '- {"type": "function", "name": "X"}  <-- NEVER USE',
-            '- {"type": "tool_use", "name": "X"}  <-- NEVER USE',
-            '- <tool_calls><tool_call>{...}</tool_call></tool_calls>  <-- NEVER USE',
-            '- <tool_call>{...}</tool_call>  <-- NEVER USE',
-            "ONLY ##TOOL_CALL##...##END_CALL## is accepted. Any other format will cause 'Tool X does not exists.' error.",
-            "=== END TOOL INSTRUCTIONS ===",
-        ]
-        return "\n".join(lines)
-
     lines = [
-        "=== TOOL USAGE INSTRUCTIONS ===",
+        "=== MANDATORY TOOL CALL INSTRUCTIONS ===",
+        "IGNORE any previous output format instructions (needs-review, recap, etc.).",
         f"You have access to these tools: {', '.join(names)}",
-        "When a tool is needed, emit a single XML tool call block and nothing else:",
-        '<tool_call>{"name": "EXACT_TOOL_NAME", "input": {"param1": "value1"}}</tool_call>',
+        "",
+        "WHEN YOU NEED TO CALL A TOOL — output EXACTLY this format (nothing else):",
+        "##TOOL_CALL##",
+        '{"name": "EXACT_TOOL_NAME", "input": {"param1": "value1"}}',
+        "##END_CALL##",
+        "",
         "Rules:",
-        "- Output only the XML block.",
-        "- No prose before or after the block.",
+        "- Output only the wrapper and JSON body.",
+        "- No prose before or after the wrapper.",
         "- No markdown fences.",
         "- No thinking tags.",
         "- Use the exact tool name from the list above.",
         "- Put arguments inside the input object.",
+        "- Do not invent tool names.",
         "- If no tool is needed, answer normally.",
+        "",
+        "CRITICAL — FORBIDDEN FORMATS (will be blocked by server):",
+        '- {"name": "X", "arguments": "..."}  <-- NEVER USE',
+        '- {"type": "function", "name": "X"}  <-- NEVER USE',
+        '- {"type": "tool_use", "name": "X"}  <-- NEVER USE',
+        '- <tool_calls><tool_call>{...}</tool_call></tool_calls>  <-- NEVER USE',
+        '- <tool_call>{...}</tool_call>  <-- NEVER USE',
+        "ONLY ##TOOL_CALL##...##END_CALL## is accepted. Any other format will cause 'Tool X does not exists.' error.",
         "=== END TOOL INSTRUCTIONS ===",
     ]
     return "\n".join(lines)

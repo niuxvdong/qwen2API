@@ -4,7 +4,6 @@ import json
 from typing import Any, Callable
 
 from backend.runtime.execution import RuntimeToolDirective
-from backend.services.prompt_builder import CLAUDE_CODE_OPENAI_PROFILE
 from backend.toolcall.parser import parse_tool_calls_detailed
 
 
@@ -37,14 +36,8 @@ class OpenAIStreamTranslator:
         if not text_chunk:
             return False
         lowered = text_chunk.lower()
-        common_markers = ("tool does not exists", "</think>", "function.name:")
+        common_markers = ("tool does not exists", "</think>", "function.name:", "##tool_call##", "##end_call##")
         if any(marker in lowered for marker in common_markers):
-            return True
-        if self.client_profile == CLAUDE_CODE_OPENAI_PROFILE:
-            profile_markers = ("##tool_call##", "##end_call##")
-        else:
-            profile_markers = ("<tool_call", "<tool_calls")
-        if any(marker in lowered for marker in profile_markers):
             return True
         if self.allowed_tool_names:
             detailed = parse_tool_calls_detailed(text_chunk, self.allowed_tool_names)

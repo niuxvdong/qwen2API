@@ -6,16 +6,16 @@ import time
 import uuid
 from typing import Any, Awaitable, Callable
 from backend.adapter.standard_request import StandardRequest
-from backend.core.config import resolve_model, settings
+from backend.core.config import settings
 from backend.core.request_logging import new_request_id, request_context, update_request_context
 from backend.services.attachment_preprocessor import preprocess_attachments
 from backend.services.auth_quota import resolve_auth_context
 from backend.services.completion_bridge import run_retryable_completion_bridge
 from backend.services.openai_stream_translator import OpenAIStreamTranslator
-from backend.services.prompt_builder import CLAUDE_CODE_OPENAI_PROFILE, OPENCLAW_OPENAI_PROFILE, messages_to_prompt
+from backend.services.prompt_builder import CLAUDE_CODE_OPENAI_PROFILE, OPENCLAW_OPENAI_PROFILE
 from backend.services.response_formatters import build_openai_completion_payload
 from backend.services.qwen_client import QwenClient
-from backend.toolcall.normalize import build_tool_name_registry
+from backend.services.standard_request_builder import build_chat_standard_request
 from backend.runtime.execution import RuntimeAttemptState, build_tool_directive, build_usage_delta_factory
 
 log = logging.getLogger("qwen2api.chat")
@@ -31,24 +31,14 @@ def _detect_openai_client_profile(request: Request, req_data: dict) -> str:
 
 
 def _build_standard_request(req_data: dict, *, client_profile: str) -> StandardRequest:
-    requested_model = req_data.get("model", "gpt-3.5-turbo")
-    prompt_result = messages_to_prompt(req_data, client_profile=client_profile)
-    prompt = prompt_result.prompt
-    tools = prompt_result.tools
-    tool_names = [tool_name for tool_name in (tool.get("name") for tool in tools) if isinstance(tool_name, str) and tool_name]
-    log.info("[OAI] normalized tools=%s profile=%s", tool_names, client_profile)
-    return StandardRequest(
-        prompt=prompt,
-        response_model=requested_model,
-        resolved_model=resolve_model(requested_model),
+    standard_request = build_chat_standard_request(
+        req_data,
+        default_model="gpt-3.5-turbo",
         surface="openai",
         client_profile=client_profile,
-        stream=req_data.get("stream", False),
-        tools=tools,
-        tool_names=tool_names,
-        tool_name_registry=build_tool_name_registry(tool_names),
-        tool_enabled=prompt_result.tool_enabled,
     )
+    log.info("[OAI] normalized tools=%s profile=%s", standard_request.tool_names, client_profile)
+    return standard_request
 
 
 @router.post("/chat/completions")
