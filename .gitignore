@@ -34,7 +34,6 @@ fix_*.py
 .claude/
 .worktrees/
 .gitignore
-.DS_Store
 *.suo
 *.ntvs
 *.njsproj
@@ -44,5 +43,3 @@ fix_*.py
 # local cleanup
 tests/
 docs/superpowers/
-backend/accounts.json
-backend/data/

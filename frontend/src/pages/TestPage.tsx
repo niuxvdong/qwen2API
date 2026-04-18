@@ -5,105 +5,6 @@ import { getAuthHeader } from "../lib/auth"
 import { API_BASE } from "../lib/api"
 import { toast } from "sonner"
 
-type ModelOption = {
-  value: string
-  label: string
-  group: string
-}
-
-const DEFAULT_QWEN_ALIAS_MAP: Record<string, string> = {
-  "qwen": "qwen3.6-plus",
-  "qwen-max": "qwen3.6-plus",
-  "qwen-plus": "qwen3.6-plus",
-  "qwen3.6plus": "qwen3.6-plus",
-  "qwen-turbo": "qwen3.5-flash",
-  "qwen-code": "qwen3-coder-plus",
-  "qwen-code-plus": "qwen3-coder-plus",
-  "qwen-coder": "qwen3-coder-plus",
-  "qwen3-coder": "qwen3-coder-plus",
-  "qwen3-coder-plus": "qwen3-coder-plus",
-}
-
-const DEFAULT_QWEN_DIRECT_MODELS = [
-  "qwen3.6-plus",
-  "qwen3.5-plus",
-  "qwen3.5-omni-plus",
-]
-
-const QWEN_MODEL_PRIORITY = [
-  "qwen3.6-plus",
-  "qwen3.5-plus",
-  "qwen3.5-omni-plus",
-  "qwen3.5-flash",
-  "qwen3-coder-plus",
-  "qwen-max",
-  "qwen-plus",
-  "qwen-turbo",
-  "qwen-code",
-  "qwen-code-plus",
-  "qwen-coder",
-  "qwen3-coder",
-  "qwen3.6plus",
-  "qwen",
-]
-
-function isQwenLikeModel(name: string) {
-  const normalized = name.trim().toLowerCase()
-  return normalized.startsWith("qwen")
-}
-
-function sortModels(values: string[]) {
-  const priority = new Map(QWEN_MODEL_PRIORITY.map((name, index) => [name, index]))
-  return [...values].sort((left, right) => {
-    const leftRank = priority.get(left) ?? Number.MAX_SAFE_INTEGER
-    const rightRank = priority.get(right) ?? Number.MAX_SAFE_INTEGER
-    if (leftRank !== rightRank) return leftRank - rightRank
-    return left.localeCompare(right)
-  })
-}
-
-function buildModelOptions(upstreamModels: string[], aliasMap: Record<string, string>): ModelOption[] {
-  const directModels = new Set(
-    [...DEFAULT_QWEN_DIRECT_MODELS, ...upstreamModels]
-      .filter(isQwenLikeModel)
-      .map(item => item.trim())
-  )
-  const aliasEntries = Object.entries(aliasMap)
-    .filter(([alias, target]) => isQwenLikeModel(alias) || isQwenLikeModel(target))
-    .map(([alias, target]) => [alias.trim(), target.trim()] as const)
-
-  const targetModels = new Set(
-    aliasEntries
-      .map(([, target]) => target)
-      .filter(isQwenLikeModel)
-      .filter(target => !directModels.has(target))
-  )
-
-  const options: ModelOption[] = []
-
-  for (const model of sortModels([...directModels])) {
-    options.push({ value: model, label: model, group: "网页返回模型" })
-  }
-
-  for (const [alias, target] of aliasEntries.sort((left, right) => {
-    const leftRank = QWEN_MODEL_PRIORITY.indexOf(left[0])
-    const rightRank = QWEN_MODEL_PRIORITY.indexOf(right[0])
-    if (leftRank !== rightRank) {
-      return (leftRank === -1 ? Number.MAX_SAFE_INTEGER : leftRank) - (rightRank === -1 ? Number.MAX_SAFE_INTEGER : rightRank)
-    }
-    return left[0].localeCompare(right[0])
-  })) {
-    if (directModels.has(alias)) continue
-    options.push({ value: alias, label: `${alias} -> ${target}`, group: "Qwen 兼容别名" })
-  }
-
-  for (const model of sortModels([...targetModels])) {
-    options.push({ value: model, label: model, group: "更多 Qwen 目标模型" })
-  }
-
-  return options
-}
-
 // 渲染消息内容：自动把 Markdown 图片和图片 URL 渲染成 <img>
 function MessageContent({ content }: { content: string }) {
   type Seg = { start: number; end: number; url: string }
@@ -149,64 +50,12 @@ export default function TestPage() {
   const [input, setInput] = useState("")
   const [loading, setLoading] = useState(false)
   const [model, setModel] = useState("qwen3.6-plus")
-  const [modelOptions, setModelOptions] = useState<ModelOption[]>(() => buildModelOptions([], DEFAULT_QWEN_ALIAS_MAP))
-  const [modelSummary, setModelSummary] = useState("正在加载模型列表...")
   const [stream, setStream] = useState(true)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages])
-
-  const fetchModelOptions = async (silent = true) => {
-    try {
-      const [modelsRes, settingsRes] = await Promise.all([
-        fetch(`${API_BASE}/v1/models`, { headers: getAuthHeader() }),
-        fetch(`${API_BASE}/api/admin/settings`, { headers: getAuthHeader() }),
-      ])
-
-      let upstreamModels: string[] = []
-      if (modelsRes.ok) {
-        const modelsData = await modelsRes.json()
-        upstreamModels = Array.isArray(modelsData?.data)
-          ? modelsData.data
-              .map((item: any) => String(item?.id || item?.model || item?.name || "").trim())
-              .filter(Boolean)
-          : []
-      }
-
-      let aliasMap = DEFAULT_QWEN_ALIAS_MAP
-      if (settingsRes.ok) {
-        const settingsData = await settingsRes.json()
-        if (settingsData?.model_aliases && typeof settingsData.model_aliases === "object") {
-          aliasMap = settingsData.model_aliases as Record<string, string>
-        }
-      }
-
-      const nextOptions = buildModelOptions(upstreamModels, aliasMap)
-      setModelOptions(nextOptions)
-      setModel(current => nextOptions.some(item => item.value === current) ? current : (nextOptions[0]?.value || current))
-
-      const qwenAliasCount = Object.entries(aliasMap).filter(([alias, target]) => isQwenLikeModel(alias) || isQwenLikeModel(String(target))).length
-      const directCount = nextOptions.filter(item => item.group === "网页返回模型").length
-      setModelSummary(`网页返回 ${directCount} 个模型，Qwen 兼容别名 ${qwenAliasCount} 个。`)
-
-      if (!silent) {
-        toast.success("模型列表已刷新")
-      }
-    } catch (err: any) {
-      const fallback = buildModelOptions([], DEFAULT_QWEN_ALIAS_MAP)
-      setModelOptions(fallback)
-      setModelSummary("模型列表加载失败，已回退到内置 Qwen 模型选项。")
-      if (!silent) {
-        toast.error(`模型列表加载失败: ${err.message}`)
-      }
-    }
-  }
-
-  useEffect(() => {
-    fetchModelOptions()
-  }, [])
 
   const handleSend = async () => {
     if (!input.trim() || loading) return
@@ -309,29 +158,13 @@ export default function TestPage() {
           <p className="text-muted-foreground">在此测试您的 API 分发是否正常工作。</p>
         </div>
         <div className="flex gap-4 items-center">
-          <div className="flex flex-col gap-1 text-sm bg-card border px-3 py-2 rounded-md min-w-[20rem]">
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-muted-foreground">模型:</span>
-              <select value={model} onChange={e => setModel(e.target.value)} className="bg-transparent font-mono outline-none min-w-[16rem]">
-                {["网页返回模型", "Qwen 兼容别名", "更多 Qwen 目标模型"].map(group => {
-                  const options = modelOptions.filter(item => item.group === group)
-                  if (options.length === 0) return null
-                  return (
-                    <optgroup key={group} label={group}>
-                      {options.map(option => (
-                        <option key={`${group}:${option.value}`} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )
-                })}
-              </select>
-              <Button variant="ghost" size="sm" onClick={() => fetchModelOptions(false)}>
-                <RefreshCw className="h-4 w-4" />
-              </Button>
-            </div>
-            <span className="text-xs text-muted-foreground">{modelSummary}</span>
+          <div className="flex items-center gap-2 text-sm bg-card border px-3 py-1.5 rounded-md">
+            <span className="font-medium text-muted-foreground">模型:</span>
+            <select value={model} onChange={e => setModel(e.target.value)} className="bg-transparent font-mono outline-none">
+              <option value="qwen3.6-plus">qwen3.6-plus</option>
+              <option value="qwen-max">qwen-max</option>
+              <option value="qwen-turbo">qwen-turbo</option>
+            </select>
           </div>
           <div
             className="flex items-center gap-2 text-sm bg-card border px-3 py-1.5 rounded-md cursor-pointer"

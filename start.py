@@ -22,28 +22,6 @@ DATA_DIR = WORKSPACE_DIR / "data"
 def ensure_dirs():
     LOGS_DIR.mkdir(exist_ok=True)
     DATA_DIR.mkdir(exist_ok=True)
-    (DATA_DIR / "context_files").mkdir(exist_ok=True)
-
-
-def build_local_runtime_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(WORKSPACE_DIR)
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["PYTHONUTF8"] = "1"
-
-    local_paths = {
-        "ACCOUNTS_FILE": DATA_DIR / "accounts.json",
-        "USERS_FILE": DATA_DIR / "users.json",
-        "CAPTURES_FILE": DATA_DIR / "captures.json",
-        "CONFIG_FILE": DATA_DIR / "config.json",
-        "CONTEXT_GENERATED_DIR": DATA_DIR / "context_files",
-        "CONTEXT_CACHE_FILE": DATA_DIR / "context_cache.json",
-        "UPLOADED_FILES_FILE": DATA_DIR / "uploaded_files.json",
-        "CONTEXT_AFFINITY_FILE": DATA_DIR / "session_affinity.json",
-    }
-    for key, path in local_paths.items():
-        env[key] = str(path)
-    return env
 
 
 def check_python():
@@ -54,7 +32,8 @@ def check_python():
 
 def install_backend_deps():
     print("⚡ [1/4] 安装后端依赖...")
-    env = build_local_runtime_env()
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(WORKSPACE_DIR)
     try:
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "-q"],
@@ -68,7 +47,8 @@ def install_backend_deps():
 
 def fetch_browser():
     print("⚡ [2/4] 检查注册功能所需的 Camoufox 浏览器内核...")
-    env = build_local_runtime_env()
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(WORKSPACE_DIR)
     try:
         result = subprocess.run(
             [sys.executable, "-m", "camoufox", "path"],
@@ -148,7 +128,10 @@ def kill_port(port: int):
 
 def start_backend() -> subprocess.Popen:
     print("⚡ [4/4] 启动后端服务...")
-    env = build_local_runtime_env()
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(WORKSPACE_DIR)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
 
     port = env.get("PORT", "7860")
     workers = env.get("WORKERS", "1")

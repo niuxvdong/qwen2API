@@ -1,5 +1,7 @@
+# syntax=docker/dockerfile:1.7
+
 # Stage 1: Build frontend assets once on the build platform.
-FROM node:20-bookworm-slim AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS frontend-builder
 WORKDIR /app
 COPY frontend/package*.json ./
 RUN npm ci
@@ -20,9 +22,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LOG_LEVEL=INFO \
     PYTHONPATH=/workspace
 
-RUN sed -i 's|http://deb.debian.org/debian|https://mirrors.tuna.tsinghua.edu.cn/debian|g; s|http://deb.debian.org/debian-security|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list.d/debian.sources \
-    && apt-get -o Acquire::Retries=5 update \
-    && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     wget \
