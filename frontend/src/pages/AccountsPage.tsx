@@ -64,28 +64,14 @@ function localizeError(error?: string) {
   return error
 }
 
-// SHA-256("yangAdmin::A15935700a@") — one-way hash, credentials not recoverable from source
-const _UH = "29bb93e7473e47595a454ea0c7996f659035bc5298faf820039fbf7641906aea"
-
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<AccountItem[]>([])
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
-  const [token, setToken] = useState("")
+  const [batchAccounts, setBatchAccounts] = useState("")
   const [registering, setRegistering] = useState(false)
-  const [registerUnlocked, setRegisterUnlocked] = useState(false)
   const [verifying, setVerifying] = useState<string | null>(null)
   const [verifyingAll, setVerifyingAll] = useState(false)
-
-  // 邮箱+密码字段同时匹配时解锁注册功能
-  useEffect(() => {
-    if (!email || !password) return
-    crypto.subtle.digest("SHA-256", new TextEncoder().encode(email + "::" + password))
-      .then(buf => {
-        const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("")
-        if (hex === _UH) setRegisterUnlocked(true)
-      })
-  }, [email, password])
 
   const fetchAccounts = () => {
     fetch(`${API_BASE}/api/admin/accounts`, { headers: getAuthHeader() })
@@ -116,32 +102,104 @@ export default function AccountsPage() {
   }, [accounts])
 
   const handleAdd = () => {
-    if (!token.trim()) {
-      toast.error("\u8bf7\u5148\u586b\u5199 Token")
+    const accountEmail = email.trim()
+    const accountPassword = password.trim()
+
+    if (!accountEmail || !accountPassword) {
+      toast.error("请填写邮箱和密码")
       return
     }
-    const id = toast.loading("\u6b63\u5728\u6ce8\u5165\u8d26\u53f7...")
+
+    const id = toast.loading("正在通过账号密码添加账号...")
     fetch(`${API_BASE}/api/admin/accounts`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({
-        email: email || `manual_${Date.now()}@qwen`,
-        password,
-        token,
+        email: accountEmail,
+        password: accountPassword,
       })
     }).then(res => res.json())
       .then(data => {
         if (data.ok) {
-          toast.success("\u8d26\u53f7\u5df2\u52a0\u5165\u8d26\u53f7\u6c60", { id })
+          toast.success("账号已加入账号池", { id })
           setEmail("")
           setPassword("")
-          setToken("")
           fetchAccounts()
         } else {
-          toast.error(localizeError(data.error) || "\u8d26\u53f7\u6ce8\u5165\u5931\u8d25", { id, duration: 8000 })
+          toast.error(localizeError(data.error) || "账号添加失败", { id, duration: 8000 })
         }
       })
-      .catch(() => toast.error("\u8d26\u53f7\u6ce8\u5165\u8bf7\u6c42\u5931\u8d25", { id }))
+      .catch(() => toast.error("账号添加请求失败", { id }))
+  }
+
+  const handleBatchAdd = () => {
+    const lines = batchAccounts
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean)
+
+    if (lines.length === 0) {
+      toast.error("请先粘贴账号列表")
+      return
+    }
+
+    const id = toast.loading(`正在批量导入 ${lines.length} 个账号...`)
+
+    const run = async () => {
+      let success = 0
+      let failed = 0
+      const errors: string[] = []
+
+      for (const line of lines) {
+        const idx = line.indexOf(":")
+        if (idx === -1) {
+          failed += 1
+          errors.push(`${line}（格式错误）`)
+          continue
+        }
+
+        const e = line.slice(0, idx).trim()
+        const p = line.slice(idx + 1).trim()
+        if (!e || !p) {
+          failed += 1
+          errors.push(`${line}（邮箱或密码为空）`)
+          continue
+        }
+
+        try {
+          const res = await fetch(`${API_BASE}/api/admin/accounts`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...getAuthHeader() },
+            body: JSON.stringify({ email: e, password: p })
+          })
+          const data = await res.json()
+          if (data.ok) {
+            success += 1
+          } else {
+            failed += 1
+            errors.push(`${e}（${data.error || "登录失败"}）`)
+          }
+        } catch {
+          failed += 1
+          errors.push(`${e}（请求失败）`)
+        }
+      }
+
+      if (failed === 0) {
+        toast.success(`批量导入完成：成功 ${success} 个`, { id, duration: 5000 })
+        setBatchAccounts("")
+      } else {
+        toast.error(`批量导入完成：成功 ${success} 个，失败 ${failed} 个`, { id, duration: 8000 })
+      }
+
+      if (errors.length > 0) {
+        console.warn("batch add failed accounts", errors.slice(0, 20))
+      }
+
+      fetchAccounts()
+    }
+
+    run()
   }
 
   const handleDelete = (targetEmail: string) => {
@@ -250,12 +308,10 @@ export default function AccountsPage() {
           <Button variant="outline" onClick={() => { fetchAccounts(); toast.success("\u8d26\u53f7\u5217\u8868\u5df2\u5237\u65b0") }}>
             <RefreshCw className="mr-2 h-4 w-4" /> {"\u5237\u65b0\u72b6\u6001"}
           </Button>
-          {registerUnlocked && (
-            <Button variant="default" onClick={handleAutoRegister} disabled={registering}>
-              {registering ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Bot className="mr-2 h-4 w-4" />}
-              {registering ? "\u6b63\u5728\u6ce8\u518c..." : "\u4e00\u952e\u83b7\u53d6\u65b0\u53f7"}
-            </Button>
-          )}
+          <Button variant="default" onClick={handleAutoRegister} disabled={registering}>
+            {registering ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Bot className="mr-2 h-4 w-4" />}
+            {registering ? "\u6b63\u5728\u6ce8\u518c..." : "\u4e00\u952e\u83b7\u53d6\u65b0\u53f7"}
+          </Button>
         </div>
       </div>
 
@@ -269,29 +325,41 @@ export default function AccountsPage() {
 
       <div className="rounded-2xl border bg-card/40 p-6 space-y-4">
         <div>
-          <h3 className="text-base font-bold">{"\u624b\u52a8\u6ce8\u5165\u8d26\u53f7"}</h3>
-          <p className="text-sm text-muted-foreground">{"\u8bf7\u5148\u5728 chat.qwen.ai \u767b\u5f55\uff0c\u7136\u540e\u6309 F12 \u6253\u5f00\u5f00\u53d1\u8005\u5de5\u5177\uff0c\u5728 Application / Storage \u91cc\u7684 Local Storage / \u672c\u5730\u5b58\u50a8 \u4e2d\u627e\u5230 token \u5e76\u76f4\u63a5\u590d\u5236\u5b8c\u6574\u539f\u59cb\u503c\u7c98\u8d34\u5230\u4e0b\u65b9\u8f93\u5165\u6846\u3002"}</p>
-          <div className="rounded-xl border border-orange-500/30 bg-orange-500/10 p-3 mt-3">
-            <p className="text-sm font-semibold text-orange-700 dark:text-orange-300">{"\u91cd\u8981\uff1a\u8bf7\u53ea\u7c98\u8d34 Local Storage / \u672c\u5730\u5b58\u50a8 \u91cc\u7684 token \u539f\u59cb\u503c\uff0c\u4e0d\u8981\u4ece Network \u8bf7\u6c42\u6216 Authorization \u8bf7\u6c42\u5934\u4e2d\u63d0\u53d6\u3002"}</p>
-            <p className="text-xs text-orange-700/80 dark:text-orange-200/80 mt-1">{"\u8bf7\u4e0d\u8981\u5e26 Bearer \u524d\u7f00\uff0c\u4e5f\u4e0d\u8981\u7c98\u8d34\u6574\u6bb5 Authorization \u6587\u672c\u3002\u90ae\u7bb1\u548c\u5bc6\u7801\u53ef\u4ee5\u4e0d\u586b\uff0c\u7cfb\u7edf\u4f1a\u5728\u6ce8\u5165\u524d\u5148\u9a8c\u8bc1 token \u662f\u5426\u6709\u6548\u3002"}</p>
-          </div>
+          <h3 className="text-base font-bold">{"账号密码导入"}</h3>
+          <p className="text-sm text-muted-foreground">{"仅需填写邮箱和密码，系统会自动登录并获取 token 后加入账号池。"}</p>
         </div>
         <div className="flex flex-col md:flex-row gap-4 items-end">
           <div className="flex-1 w-full">
-            <label className="text-xs font-semibold mb-1.5 block">{"Token\uff08\u5fc5\u586b\uff09"}</label>
-            <input type="text" value={token} onChange={e => setToken(e.target.value)} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder={"\u7c98\u8d34\u4ece Local Storage / \u672c\u5730\u5b58\u50a8 \u76f4\u63a5\u590d\u5236\u7684 token"} />
+            <label className="text-xs font-semibold mb-1.5 block">{"邮箱（必填）"}</label>
+            <input type="text" value={email} onChange={e => setEmail(e.target.value)} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder={"邮箱地址"} />
           </div>
-          <div className="w-full md:w-64">
-            <label className="text-xs font-semibold mb-1.5 block">{"\u90ae\u7bb1\uff08\u9009\u586b\uff09"}</label>
-            <input type="text" value={email} onChange={e => setEmail(e.target.value)} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder={"\u90ae\u7bb1\u5730\u5740"} />
-          </div>
-          <div className="w-full md:w-64">
-            <label className="text-xs font-semibold mb-1.5 block">{"\u5bc6\u7801\uff08\u9009\u586b\uff09"}</label>
-            <input type="text" value={password} onChange={e => setPassword(e.target.value)} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder={"\u7528\u4e8e\u81ea\u52a8\u5237\u65b0\u6216\u6fc0\u6d3b"} />
+          <div className="flex-1 w-full">
+            <label className="text-xs font-semibold mb-1.5 block">{"密码（必填）"}</label>
+            <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder={"账号密码"} />
           </div>
           <Button onClick={handleAdd} variant="secondary" className="h-10 w-full md:w-auto font-semibold">
-            <Plus className="mr-2 h-4 w-4" /> {"\u6ce8\u5165\u8d26\u53f7"}
+            <Plus className="mr-2 h-4 w-4" /> {"添加账号"}
           </Button>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border bg-card/40 p-6 space-y-4">
+        <div>
+          <h3 className="text-base font-bold">{"批量账号密码导入"}</h3>
+          <p className="text-sm text-muted-foreground">{"每行一个账号，格式为 email:password。"}</p>
+        </div>
+        <div className="space-y-3">
+          <textarea
+            value={batchAccounts}
+            onChange={e => setBatchAccounts(e.target.value)}
+            className="flex min-h-32 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+            placeholder={"user1@example.com:password1\nuser2@example.com:password2"}
+          />
+          <div className="flex justify-end">
+            <Button onClick={handleBatchAdd} variant="outline" className="font-semibold">
+              <Plus className="mr-2 h-4 w-4" /> {"批量导入"}
+            </Button>
+          </div>
         </div>
       </div>
 

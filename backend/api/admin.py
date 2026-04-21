@@ -124,21 +124,31 @@ async def add_account(request: Request):
     except Exception:
         raise HTTPException(400, detail="Invalid JSON body")
 
-    token = data.get("token", "")
-    if not token:
-        raise HTTPException(400, detail="token is required")
+    email = str(data.get("email", "") or "").strip() or f"manual_{int(time.time())}@qwen"
+    password = str(data.get("password", "") or "").strip()
+    token = str(data.get("token", "") or "").strip()
 
     acc = Account(
-        email=data.get("email", f"manual_{int(time.time())}@qwen"),
-        password=data.get("password", ""),
+        email=email,
+        password=password,
         token=token,
         cookies=data.get("cookies", ""),
         username=data.get("username", "")
     )
 
-    is_valid = await client.verify_token(token)
-    if not is_valid:
-        return {"ok": False, "error": "Invalid token (验证失败，请确认Token有效)"}
+    # 兼容两种接入方式：
+    # 1) 直接传 token
+    # 2) 仅传 email+password，由服务端自动登录并获取 token
+    if acc.token:
+        is_valid = await client.verify_token(acc.token)
+        if not is_valid:
+            return {"ok": False, "error": "Invalid token (验证失败，请确认Token有效)"}
+    else:
+        if not acc.email or not acc.password:
+            raise HTTPException(400, detail="token or email+password is required")
+        refreshed = await client.auth_resolver.refresh_token(acc)
+        if not refreshed or not acc.token:
+            return {"ok": False, "error": "Email/password login failed (账号密码登录失败)"}
 
     await pool.add(acc)
     return {"ok": True, "email": acc.email}

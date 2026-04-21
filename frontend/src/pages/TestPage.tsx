@@ -120,18 +120,28 @@ export default function TestPage() {
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
         let hasContent = false
+        let sseBuffer = ""
 
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
 
-          const chunk = decoder.decode(value, { stream: true })
-          for (const rawLine of chunk.split("\n")) {
-            const line = rawLine.trim()
-            if (!line || line.startsWith(":") || line === "data: [DONE]") continue
-            if (line.startsWith("data: ")) {
+          sseBuffer += decoder.decode(value, { stream: true })
+          const events = sseBuffer.split("\n\n")
+          sseBuffer = events.pop() || ""
+
+          for (const rawEvent of events) {
+            const lines = rawEvent.split("\n")
+            for (const rawLine of lines) {
+              const line = rawLine.trim()
+              if (!line || line.startsWith(":")) continue
+              if (!line.startsWith("data: ")) continue
+
+              const payload = line.slice(6)
+              if (payload === "[DONE]") continue
+
               try {
-                const data = JSON.parse(line.slice(6))
+                const data = JSON.parse(payload)
                 if (data.error) {
                   setMessages(prev => {
                     const msgs = [...prev]
@@ -156,7 +166,7 @@ export default function TestPage() {
                     return msgs
                   })
                 }
-              } catch (_) { /* skip */ }
+              } catch (_) { /* skip malformed partial payloads */ }
             }
           }
         }
