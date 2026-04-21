@@ -13,9 +13,9 @@ class Settings(BaseSettings):
     WORKERS: int = int(os.getenv("WORKERS", 3))
     ADMIN_KEY: str = os.getenv("ADMIN_KEY", "admin")
 
-    # 浏览器引擎配置
-    BROWSER_POOL_SIZE: int = int(os.getenv("BROWSER_POOL_SIZE", 2))
-    MAX_INFLIGHT_PER_ACCOUNT: int = int(os.getenv("MAX_INFLIGHT", 1))
+    # 并发配置（浏览器仅用于账号注册，不用于对话请求）
+    BROWSER_POOL_SIZE: int = int(os.getenv("BROWSER_POOL_SIZE", 1))
+    MAX_INFLIGHT_PER_ACCOUNT: int = int(os.getenv("MAX_INFLIGHT", 2))
     BROWSER_STREAM_TIMEOUT_SECONDS: int = int(os.getenv("BROWSER_STREAM_TIMEOUT_SECONDS", 1800))
 
     # 容灾与限流

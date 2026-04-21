@@ -63,10 +63,23 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(garbage_collect_chats(app))
         asyncio.create_task(context_cleanup_loop(app))
 
+        # 启动 chat_id 预热池（省上游 /chats/new 握手 500ms~6s）
+        from backend.services.chat_id_pool import ChatIdPool
+        app.state.chat_id_pool = ChatIdPool(app.state.qwen_client, target_per_account=5, ttl_seconds=600, default_model="qwen3.6-plus")
+        app.state.qwen_executor.chat_id_pool = app.state.chat_id_pool  # 让 executor 直接访问
+        await app.state.chat_id_pool.start()
+
     yield
 
     with request_context(surface="shutdown"):
         log.info("正在关闭网关服务...")
+        # 关闭 chat_id 池
+        pool = getattr(app.state, "chat_id_pool", None)
+        if pool:
+            await pool.stop()
+        # 关闭 HTTP 连接池
+        await app.state.qwen_client._http_client.aclose()
+        log.info("HTTP 连接池已关闭")
 
 app = FastAPI(title="qwen2API Enterprise Gateway", version="2.0.0", lifespan=lifespan)
 

@@ -33,8 +33,51 @@ class User(BaseModel):
 async def get_system_status(request: Request):
     pool = request.app.state.account_pool
 
+    # 账号层细粒度 inflight / 状态
+    per_account = []
+    for acc in getattr(pool, "accounts", []):
+        per_account.append({
+            "email": acc.email,
+            "status": acc.get_status_code(),
+            "inflight": getattr(acc, "inflight", 0),
+            "max_inflight": getattr(pool, "max_inflight_per_account", 0),
+            "consecutive_failures": getattr(acc, "consecutive_failures", 0),
+            "rate_limit_strikes": getattr(acc, "rate_limit_strikes", 0),
+            "last_request_finished": getattr(acc, "last_request_finished", 0),
+        })
+
+    # chat_id 预热池指标（若已启用）
+    chat_id_pool_stats = None
+    cp = getattr(request.app.state, "chat_id_pool", None)
+    if cp is not None:
+        try:
+            per_account_pool: dict[str, int] = {}
+            for acc in getattr(pool, "accounts", []):
+                per_account_pool[acc.email] = await cp.size(acc.email)
+            chat_id_pool_stats = {
+                "total_cached": await cp.total_size(),
+                "target_per_account": cp._target,
+                "ttl_seconds": cp._ttl,
+                "per_account": per_account_pool,
+            }
+        except Exception:
+            chat_id_pool_stats = {"error": "snapshot failed"}
+
+    # 向运行时拿全局任务计数 / asyncio 状态
+    import asyncio
+    try:
+        tasks = asyncio.all_tasks()
+        running_tasks = sum(1 for t in tasks if not t.done())
+    except Exception:
+        running_tasks = -1
+
     return {
         "accounts": pool.status(),
+        "per_account": per_account,
+        "chat_id_pool": chat_id_pool_stats,
+        "runtime": {
+            "asyncio_running_tasks": running_tasks,
+        },
         "request_runtime": {
             "mode": "direct_http",
             "browser_required_for_requests": False,
@@ -226,24 +269,50 @@ async def delete_account(email: str, request: Request):
     return {"ok": True}
 
 @router.get("/settings", dependencies=[Depends(verify_admin)])
-async def get_settings():
+async def get_settings(request: Request):
     from backend.core.config import MODEL_MAP
-    # 从 settings.py 所在的同级导入 VERSION，避免循环导入或未定义报错
     from backend.core.config import settings as backend_settings
 
-    # 强制将 dict 转换，确保能被 JSON 序列化
     safe_map = {k: v for k, v in MODEL_MAP.items()}
+    pool = getattr(request.app.state, "chat_id_pool", None)
+    acc_pool = getattr(request.app.state, "account_pool", None)
     return {
         "version": "2.0.0",
         "max_inflight_per_account": backend_settings.MAX_INFLIGHT_PER_ACCOUNT,
-        "model_aliases": safe_map
+        "global_max_inflight": getattr(acc_pool, "global_max_inflight", 0),
+        "max_queue_size": getattr(acc_pool, "max_queue_size", 0),
+        "chat_id_pool_target": pool.target if pool else 0,
+        "chat_id_pool_ttl_seconds": pool.ttl if pool else 0,
+        "model_aliases": safe_map,
     }
 
 @router.put("/settings", dependencies=[Depends(verify_admin)])
-async def update_settings(data: dict):
+async def update_settings(data: dict, request: Request):
     from backend.core.config import MODEL_MAP
     if "max_inflight_per_account" in data:
-        settings.MAX_INFLIGHT_PER_ACCOUNT = data["max_inflight_per_account"]
+        try:
+            val = int(data["max_inflight_per_account"])
+            settings.MAX_INFLIGHT_PER_ACCOUNT = val
+            pool = getattr(request.app.state, "account_pool", None)
+            if pool is not None and hasattr(pool, "set_max_inflight"):
+                pool.set_max_inflight(val)
+        except (TypeError, ValueError):
+            pass
+    if "global_max_inflight" in data:
+        try:
+            val = int(data["global_max_inflight"])
+            pool = getattr(request.app.state, "account_pool", None)
+            if pool is not None and val > 0:
+                pool.global_max_inflight = val
+        except (TypeError, ValueError):
+            pass
+    if "chat_id_pool_target" in data or "chat_id_pool_ttl_seconds" in data:
+        cp = getattr(request.app.state, "chat_id_pool", None)
+        if cp is not None:
+            cp.update_config(
+                target=data.get("chat_id_pool_target"),
+                ttl_seconds=data.get("chat_id_pool_ttl_seconds"),
+            )
     if "model_aliases" in data:
         MODEL_MAP.clear()
         MODEL_MAP.update(data["model_aliases"])

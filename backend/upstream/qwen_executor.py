@@ -17,8 +17,23 @@ class QwenExecutor:
         self.engine = engine
         self.account_pool = account_pool
         self.auth_resolver = AuthResolver(account_pool) if account_pool is not None else None
+        # 会在 app 启动时被 main.py 注入；若未注入则为 None，走同步 create_chat
+        self.chat_id_pool = None
 
     async def create_chat(self, token: str, model: str, chat_type: str = "t2t") -> str:
+        # 预热池快路径：如果能从池里拿到一个已预建的 chat_id 直接用
+        # 需要 token 反查 email（通过 account_pool）
+        if self.chat_id_pool is not None and self.account_pool is not None:
+            try:
+                acc = next((a for a in self.account_pool.accounts if a.token == token), None)
+                if acc is not None:
+                    cached = await self.chat_id_pool.acquire(acc.email, model)
+                    if cached:
+                        log.info(f"[上游] 预热池命中 邮箱={acc.email} 会话={cached}")
+                        return cached
+            except Exception as e:
+                log.debug(f"[Executor] chat_id_pool lookup failed: {e}")
+
         request_fn = getattr(self.engine, "_request_json", None) or getattr(self.engine, "api_call", None)
         if request_fn is None:
             raise Exception("request transport unavailable")
@@ -95,20 +110,19 @@ class QwenExecutor:
         started_at = time.perf_counter()
         first_event_logged = False
         last_chunk_time = time.perf_counter()
+        total_output_chars = 0  # 方案4：统计输出字符数
 
-        # Log the actual feature_config being sent
         feature_config = payload.get("messages", [{}])[0].get("feature_config", {})
-        log.info(f"[Executor] stream start chat_id={chat_id} model={model} has_custom_tools={has_custom_tools}")
-        log.info(f"[Executor] feature_config: function_calling={feature_config.get('function_calling')} auto_search={feature_config.get('auto_search')} code_interpreter={feature_config.get('code_interpreter')} plugins_enabled={feature_config.get('plugins_enabled')}")
+        prompt_len = len(content)
+        log.info(f"[上游] 开始流式 会话={chat_id} 模型={model} 自定义工具={has_custom_tools} prompt长度={prompt_len} ({prompt_len/1024:.1f}KB)")
+        log.info(f"[上游] 功能配置: function_calling={feature_config.get('function_calling')} auto_search={feature_config.get('auto_search')} code_interpreter={feature_config.get('code_interpreter')} plugins_enabled={feature_config.get('plugins_enabled')}")
 
-        # Log the prompt content to debug tool interception
         prompt_content = payload.get("messages", [{}])[0].get("content", "")
         if "##TOOL_CALL##" in prompt_content:
-            log.info(f"[Executor] prompt contains ##TOOL_CALL## markers (expected)")
+            log.info(f"[上游] prompt 包含 ##TOOL_CALL## 标记（正常）")
         else:
-            log.warning(f"[Executor] prompt does NOT contain ##TOOL_CALL## markers - this may cause interception")
-        # Log first 500 chars of prompt to see tool instruction format
-        log.info(f"[Executor] prompt preview (first 500 chars): {prompt_content[:500]}")
+            log.warning(f"[上游] prompt 缺少 ##TOOL_CALL## 标记 — 可能导致上游拦截")
+        log.info(f"[上游] prompt 前 500 字预览: {prompt_content[:500]}")
 
         try:
             async for chunk_result in stream_fn(token, chat_id, payload):
@@ -122,13 +136,14 @@ class QwenExecutor:
 
                 if "chunk" in chunk_result:
                     buffer += chunk_result["chunk"]
+                    total_output_chars += len(chunk_result["chunk"])
                     while "\n\n" in buffer:
                         msg, buffer = buffer.split("\n\n", 1)
                         for evt in parse_sse_chunk(msg):
                             if not first_event_logged:
                                 first_event_logged = True
                                 log.info(
-                                    f"[Executor] first parsed event after {(time.perf_counter() - started_at):.3f}s chat_id={chat_id}"
+                                    f"[上游] 首个事件耗时 {(time.perf_counter() - started_at):.3f}s 会话={chat_id}"
                                 )
                             yield evt
         except Exception as e:
@@ -136,8 +151,8 @@ class QwenExecutor:
             idle_time = time.perf_counter() - last_chunk_time
             error_type = type(e).__name__
             log.error(
-                f"[Executor] stream error chat_id={chat_id} error_type={error_type} "
-                f"elapsed={elapsed:.3f}s idle_time={idle_time:.3f}s error={str(e)[:200]}"
+                f"[上游] 流错误 会话={chat_id} 错误类型={error_type} "
+                f"已耗时={elapsed:.3f}s 空闲={idle_time:.3f}s 错误={str(e)[:200]}"
             )
             raise
 
@@ -146,11 +161,17 @@ class QwenExecutor:
                 if not first_event_logged:
                     first_event_logged = True
                     log.info(
-                        f"[Executor] first parsed event after {(time.perf_counter() - started_at):.3f}s chat_id={chat_id}"
+                        f"[上游] 首个事件耗时 {(time.perf_counter() - started_at):.3f}s 会话={chat_id}"
                     )
                 yield evt
 
-        log.info(f"[Executor] stream finish chat_id={chat_id} total={(time.perf_counter() - started_at):.3f}s")
+        elapsed = time.perf_counter() - started_at
+        # 检测异常短回复（通常是上游超时的信号）
+        if has_custom_tools and total_output_chars < 20 and elapsed > 5.0:
+            log.warning(f"[上游] 异常短回复 仅 {total_output_chars} 字符 耗时 {elapsed:.1f}s — 疑似上游超时")
+            raise Exception(f"Upstream timeout suspected: only {total_output_chars} chars in {elapsed:.1f}s")
+
+        log.info(f"[上游] 流结束 会话={chat_id} 总耗时={elapsed:.3f}s 流字节={total_output_chars}")
 
     async def chat_stream_events_with_retry(
         self,
@@ -166,13 +187,13 @@ class QwenExecutor:
             update_request_context(upstream_attempt=1)
             acc = fixed_account
             try:
-                log.info(f"[Executor] using fixed account={acc.email} model={model}")
+                log.info(f"[上游] 使用指定账号 账号={acc.email} 模型={model}")
                 chat_id = existing_chat_id or await self.create_chat(acc.token, model)
                 update_request_context(chat_id=chat_id)
                 if existing_chat_id:
-                    log.info(f"[Executor] reusing chat_id={chat_id} account={acc.email}")
+                    log.info(f"[上游] 复用会话 会话={chat_id} 账号={acc.email}")
                 else:
-                    log.info(f"[Executor] created chat_id={chat_id} account={acc.email}")
+                    log.info(f"[上游] 创建会话 会话={chat_id} 账号={acc.email}")
                 yield {"type": "meta", "chat_id": chat_id, "acc": acc}
                 async for evt in self.stream(acc.token, chat_id, model, content, has_custom_tools, files=files):
                     yield {"type": "event", "event": evt}
@@ -183,15 +204,19 @@ class QwenExecutor:
 
         for attempt in range(settings.MAX_RETRIES):
             update_request_context(upstream_attempt=attempt + 1)
+            acquire_start = time.perf_counter()
             acc = await self.account_pool.acquire_wait(timeout=60, exclude=exclude)
+            acquire_elapsed = time.perf_counter() - acquire_start
             if not acc:
                 raise Exception("No available accounts in pool (all busy or rate limited)")
 
             try:
-                log.info(f"[Executor] acquired account={acc.email} model={model} attempt={attempt + 1}")
+                log.info(f"[上游] 账号已获取 账号={acc.email} 模型={model} 第{attempt + 1}次 获取耗时={acquire_elapsed:.3f}s")
+                create_start = time.perf_counter()
                 chat_id = await self.create_chat(acc.token, model)
+                create_elapsed = time.perf_counter() - create_start
                 update_request_context(chat_id=chat_id)
-                log.info(f"[Executor] created chat_id={chat_id} account={acc.email}")
+                log.info(f"[上游] 创建会话 会话={chat_id} 账号={acc.email} 耗时={create_elapsed:.3f}s")
                 yield {"type": "meta", "chat_id": chat_id, "acc": acc}
 
                 async for evt in self.stream(acc.token, chat_id, model, content, has_custom_tools, files=files):
@@ -200,7 +225,6 @@ class QwenExecutor:
 
             except Exception as e:
                 err_msg = str(e).lower()
-                # 检测超时错误
                 is_timeout = (
                     "timeout" in err_msg
                     or "timed out" in err_msg
@@ -209,7 +233,7 @@ class QwenExecutor:
                 )
 
                 if is_timeout:
-                    log.warning(f"[Executor] timeout detected attempt={attempt + 1}/{settings.MAX_RETRIES} account={acc.email} error={e}")
+                    log.warning(f"[上游] 超时 第{attempt + 1}/{settings.MAX_RETRIES}次 账号={acc.email} 错误={e}")
                     exclude.add(acc.email)
                 elif "429" in err_msg or "rate limit" in err_msg or "too many" in err_msg:
                     self.account_pool.mark_rate_limited(acc)
@@ -226,7 +250,7 @@ class QwenExecutor:
 
                 self.account_pool.release(acc)
                 log.warning(
-                    f"[Executor] retry attempt={attempt + 1}/{settings.MAX_RETRIES} account={acc.email} error={e}"
+                    f"[上游] 重试 第{attempt + 1}/{settings.MAX_RETRIES}次 账号={acc.email} 错误={e}"
                 )
 
         raise Exception(f"All {settings.MAX_RETRIES} attempts failed. Please check upstream accounts.")

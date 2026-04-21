@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from backend.adapter.standard_request import StandardRequest
+from backend.adapter.cli_proxy import CLIProxy
 from backend.core.config import resolve_model
 from backend.core.request_logging import new_request_id, request_context, update_request_context
 from backend.runtime import stream_presenter
@@ -19,39 +20,11 @@ router = APIRouter()
 GEMINI_STREAM_MEDIA_TYPE = "application/json"
 
 
-def _extract_gemini_prompt(body: dict) -> str:
-    lines: list[str] = []
-    for message in body.get("contents", []) or []:
-        if message.get("role") != "user":
-            continue
-        for part in message.get("parts", []) or []:
-            text = part.get("text")
-            if text:
-                lines.append(text)
-    return "\n".join(lines)
-
-
-def _is_gemini_stream_request(body: dict[str, Any]) -> bool:
-    if body.get("stream") is True:
-        return True
-    generation_config = body.get("generationConfig")
-    if isinstance(generation_config, dict) and generation_config.get("stream") is True:
-        return True
-    return False
-
-
 def _build_standard_request(model: str, body: dict, *, stream: bool | None = None) -> StandardRequest:
-    prompt = _extract_gemini_prompt(body)
-    stream_requested = _is_gemini_stream_request(body) if stream is None else stream
-    return StandardRequest(
-        prompt=prompt,
-        response_model=model,
-        resolved_model=resolve_model(model),
-        surface="gemini",
-        requested_model=model,
-        content=prompt,
-        stream=stream_requested,
-    )
+    """使用 CLIProxy 进行协议转换"""
+    standard_request = CLIProxy.from_gemini(model, body, stream=stream)
+    CLIProxy.log_conversion("gemini", standard_request.response_model, len(standard_request.prompt), len(standard_request.tools))
+    return standard_request
 
 
 def _gemini_chunk_payload(text: str) -> dict[str, Any]:

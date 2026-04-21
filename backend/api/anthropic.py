@@ -6,6 +6,7 @@ import logging
 import uuid
 
 from backend.adapter.standard_request import StandardRequest
+from backend.adapter.cli_proxy import CLIProxy
 from backend.core.config import resolve_model, settings
 from backend.core.request_logging import new_request_id, request_context, update_request_context
 from backend.runtime import stream_presenter
@@ -13,6 +14,7 @@ from backend.runtime.execution import (
     build_tool_directive,
     cleanup_runtime_resources,
     collect_completion_run,
+    collect_completion_run_with_recovery,
     evaluate_retry_directive,
     request_max_attempts,
 )
@@ -123,23 +125,10 @@ class _AnthropicStreamState:
 
 
 def _build_standard_request(req_data: dict) -> StandardRequest:
-    model_name = req_data.get("model", "claude-3-5-sonnet")
-    prompt_result = messages_to_prompt(req_data, client_profile=CLAUDE_CODE_OPENAI_PROFILE)
-    prompt = prompt_result.prompt
-    tools = prompt_result.tools
-    tool_names = [tool_name for tool_name in (tool.get("name") for tool in tools) if isinstance(tool_name, str) and tool_name]
-    return StandardRequest(
-        prompt=prompt,
-        response_model=model_name,
-        resolved_model=resolve_model(model_name),
-        surface="anthropic",
-        client_profile=CLAUDE_CODE_OPENAI_PROFILE,
-        stream=req_data.get("stream", False),
-        tools=tools,
-        tool_names=tool_names,
-        tool_name_registry=build_tool_name_registry(tool_names),
-        tool_enabled=prompt_result.tool_enabled,
-    )
+    """使用 CLIProxy 进行协议转换"""
+    standard_request = CLIProxy.from_anthropic(req_data, client_profile=CLAUDE_CODE_OPENAI_PROFILE)
+    CLIProxy.log_conversion("anthropic", standard_request.response_model, len(standard_request.prompt), len(standard_request.tools))
+    return standard_request
 
 
 def _anthropic_usage(prompt: str, answer_text: str) -> dict[str, int]:
@@ -207,7 +196,14 @@ async def anthropic_count_tokens(request: Request):
     except Exception:
         raise HTTPException(400, {"error": {"message": "Invalid JSON body", "type": "invalid_request_error"}})
     prompt_result = messages_to_prompt(req_data, client_profile=CLAUDE_CODE_OPENAI_PROFILE)
-    return JSONResponse({"input_tokens": count_tokens(prompt_result.prompt)})
+    base_tokens = count_tokens(prompt_result.prompt)
+    # Context Pressure Inflation:
+    # Claude Code 假设 context window=200K，到 ~80%(160K) 触发自动压缩。
+    # 但 Qwen 实际上游 window 只有 ~150K，到 ~120K 时就开始挤压输出预算。
+    # 虚增 input_tokens 1.35x 让 CC 提前触发压缩，避免爆 window。
+    inflation = 1.35
+    inflated = int(base_tokens * inflation)
+    return JSONResponse({"input_tokens": inflated})
 
 
 @router.post("/messages")
@@ -283,7 +279,7 @@ async def anthropic_messages(request: Request):
         msg_id = f"msg_{uuid.uuid4().hex[:12]}"
         return standard_request, working_payload, model_name, qwen_model, prompt, msg_id
 
-    with request_context(req_id=new_request_id(), surface="anthropic", requested_model=req_data.get("model", "claude-3-5-sonnet"), resolved_model="-"):
+    with request_context(req_id=new_request_id(), surface="anthropic", requested_model=req_data.get("model", "claude-3-5-sonnet"), resolved_model="-", api_key=auth.token):
         if request.headers.get("x-debug-session-key"):
             pass
 
@@ -324,12 +320,15 @@ async def anthropic_messages(request: Request):
                                         partial_json=evt.get("content", ""),
                                     )
 
-                            execution = await collect_completion_run(
+                            execution = await collect_completion_run_with_recovery(
                                 client,
                                 standard_request,
                                 current_prompt,
                                 capture_events=False,
                                 on_delta=on_delta,
+                                max_continuation=2,
+                                warmup_chars=64,
+                                guard_chars=96,
                             )
                             retry = evaluate_retry_directive(
                                 request=standard_request,

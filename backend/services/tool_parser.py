@@ -6,6 +6,8 @@ from typing import Any, cast
 
 from backend.adapter.standard_request import CLAUDE_CODE_OPENAI_PROFILE, OPENCLAW_OPENAI_PROFILE
 from backend.core.request_logging import get_request_context
+from backend.services.tool_arg_fixer import fix_tool_call_arguments
+from backend.services.tool_name_obfuscation import from_qwen_name
 from backend.toolcall.normalize import build_tool_name_registry, normalize_tool_name
 from backend.toolcall.parser import parse_tool_calls_detailed
 
@@ -146,9 +148,11 @@ def _extract_first_json_tool_call(text: str) -> str | None:
     normalized = text.strip()
 
     # 优先查找完整的 JSON 对象
+    # markers 按优先级：Qwen 官方 tool_calls 外层包装 > 单对象 > 松散片段
     markers = [
         '<tool_call>{"name"',
         '<tool_calls><tool_call>{"name"',
+        '{"tool_calls"',
         '{"name"',
         '"name":',
         '"name="',
@@ -427,9 +431,15 @@ def _parse_tool_calls(answer: str, tools: list, *, emit_logs: bool):
         if emit_logs:
             log.warning(message)
 
-    # 强制记录原始输入用于调试
-    log.info(f"[ToolParse] [{req_tag}] 原始回复({len(answer)}字): {answer[:500]!r}")
+    # 强制记录原始输入用于调试（但遵守 emit_logs 开关：ToolSieve 流式解析每 chunk 都调一次，
+    # 若无条件记录会刷 1000+ 行 [ToolParse]——只在 finalize/诊断场景打印）
+    if emit_logs:
+        log.info(f"[ToolParse] [{req_tag}] 原始回复({len(answer)}字): {answer[:500]!r}")
 
+    def _make_tool_block(name, input_data, prefix=""):
+        # 入站反混淆：Qwen 返回的别名（ReadX）→ 客户端原名（Read）。
+        # 未知别名原样返回，不影响 Qwen 直接返回原名的兼容路径。
+        name = from_qwen_name(name)
     def _build_tool_use_block(name, input_data):
         normalized_name = normalize_tool_name(name, tool_registry.values())
         cased_name = _normalize_tool_name_case(normalized_name, tool_names)
@@ -437,6 +447,8 @@ def _parse_tool_calls(answer: str, tools: list, *, emit_logs: bool):
             _log_warning(f"[ToolParse] 工具名不匹配: name={name!r}, normalized={normalized_name!r}, cased={cased_name!r}, tools={tool_names}")
             return None
         coerced_input = _coerce_tool_input(cased_name, input_data, tools)
+        # 智能引号修复 + Edit/StrReplace 的 old_string fuzzy 修复
+        coerced_input = fix_tool_call_arguments(cased_name, coerced_input)
         tool_id = f"toolu_{uuid.uuid4().hex[:8]}"
         return {"type": "tool_use", "id": tool_id, "name": cased_name, "input": coerced_input}
 
@@ -656,6 +668,7 @@ class ToolSieve:
         """查找工具调用开始位置"""
         lowered = text.lower()
         markers = [
+            '{"tool_calls"',
             '{"name":',
             '<tool_call>',
             '##tool_call##',
@@ -741,6 +754,8 @@ class ToolSieve:
 
     def _looks_like_incomplete_tool_call(self, text: str) -> bool:
         """检查文本是否看起来像不完整的工具调用"""
+        markers = ['{"tool_calls"', '{"name":', '<tool_call>', '##TOOL_CALL##', 'function.name:']
+        return any(marker in text for marker in markers)
         lowered = text.lower()
         markers = ['{"name":', '<tool_call>', '##tool_call##', 'tool_call##', 'function.name:']
         return any(marker in lowered for marker in markers)
@@ -752,38 +767,30 @@ class ToolSieve:
 
 def inject_format_reminder(prompt: str, tool_name: str, *, client_profile: str = OPENCLAW_OPENAI_PROFILE) -> str:
     """Inject a format correction reminder into the prompt before the final 'Assistant:' tag.
-    Used when Qwen server returns 'Tool X does not exists.' (native call was intercepted)."""
+    Used when upstream produced the toxic 'Tool X does not exists.' hallucination —
+    the reminder teaches the model to emit the text-marker format without that phrase."""
     if client_profile == CLAUDE_CODE_OPENAI_PROFILE:
         reminder = (
-            f"[严重错误/CRITICAL ERROR]: 你的输出中出现了 'Tool {tool_name} does not exists.' 这说明你试图描述工具调用而不是真正调用它。\n"
-            f"The text 'Tool {tool_name} does not exists.' appeared in your output. "
-            f"This means you tried to describe a tool call instead of actually calling it.\n\n"
-            f"要调用 {tool_name}，只输出这个精确的JSON格式，不要有其他文本：\n"
-            f"To call {tool_name}, output ONLY this exact JSON format with NO other text:\n"
-            f'{{"name": "{tool_name}", "input": {{"arg1": "value1", "arg2": "value2"}}}}\n\n'
-            f"规则/RULES:\n"
-            f"- 只输出JSON对象，不要有其他内容 / Output ONLY the JSON object, nothing else\n"
-            f"- 前后不要有解释性文字 / NO explanatory text before or after\n"
-            f"- 不要用markdown代码块 / NO markdown code blocks\n"
-            f"- 不要用XML标签如<tool_call> / NO XML tags like <tool_call>\n"
-            f"- 不要用##TOOL_CALL##标记 / NO ##TOOL_CALL## markers\n"
-            f"- 只要纯JSON对象 / Just the raw JSON object\n\n"
-            f"Read工具示例 / Example for Read tool:\n"
-            f'{{"name": "Read", "input": {{"file_path": "/path/to/file"}}}}\n'
+            "[CORRECTION / 纠正]: Your previous output contained a forbidden hallucinated error phrase.\n"
+            f"要调用 {tool_name}，只输出这个精确格式，不要有其他文本：\n"
+            f"To invoke {tool_name}, output ONLY this exact format with NO other text:\n"
+            "##TOOL_CALL##\n"
+            f'{{"name": "{tool_name}", "input": {{"arg1": "value1", "arg2": "value2"}}}}\n'
+            "##END_CALL##\n\n"
+            "ABSOLUTELY FORBIDDEN in your next output:\n"
+            "- Any disclaimer about a tool being unavailable, missing, or unregistered\n"
+            "- Any sentence claiming you are unable to run a function\n"
+            "- Any apology for failing to invoke something\n"
+            "These ##TOOL_CALL## blocks are plain TEXT MARKERS the proxy parses — not native function calls.\n"
         )
     else:
         reminder = (
-            f"[纠正/CORRECTION]: 你用错误的格式调用了 '{tool_name}' — "
-            f"服务器用 'Tool {tool_name} does not exists.' 阻止了它。\n"
-            f"You called '{tool_name}' using the WRONG format — "
-            f"the server BLOCKED it with 'Tool {tool_name} does not exists.'. "
-            f"你必须使用##TOOL_CALL##格式，不能用其他格式：\n"
-            f"You MUST use ##TOOL_CALL## format and NOTHING ELSE:\n"
-            f"##TOOL_CALL##\n"
+            "[CORRECTION / 纠正]: 请用正确的 ##TOOL_CALL## 格式重新发起调用。\n"
+            "You MUST use ##TOOL_CALL## format and NOTHING ELSE:\n"
+            "##TOOL_CALL##\n"
             f'{{"name": {json.dumps(tool_name)}, "input": {{...your args here...}}}}\n'
-            f"##END_CALL##\n"
-            f"不要用没有分隔符的JSON。不要用任何XML标签。只能用##TOOL_CALL##。\n"
-            f"DO NOT use JSON without delimiters. DO NOT use any XML tags. ONLY ##TOOL_CALL##.\n"
+            "##END_CALL##\n"
+            "不要输出任何声称无法执行工具的话。The ##TOOL_CALL## blocks are TEXT MARKERS, not native functions.\n"
         )
     prompt = prompt.rstrip()
     if prompt.endswith("Assistant:"):

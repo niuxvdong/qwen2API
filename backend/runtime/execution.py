@@ -26,6 +26,26 @@ from backend.toolcall.runtime_tools import (
 from backend.toolcall.stream_state import StreamingToolCallState
 
 
+# Qwen 偶尔生成的毒性"工具不存在"或"无法继续"幻觉。
+# 在流式收到前 20 字时识别，触发早期拦截 + retry 而不是流给客户端。
+_TOXIC_REFUSAL_RE = re.compile(
+    # 英文：工具不存在/不可用
+    r"Tool\s+\S+\s+(?:does\s+not\s+exists?|is\s+not\s+(?:available|registered))"
+    r"|I\s+cannot\s+execute\s+this\s+tool"
+    # 英文：任务放弃/拒绝继续
+    r"|I[''\u2019]?\s*m\s+sorry[,. ]"
+    r"|I\s+cannot\s+(?:help|assist|proceed|continue|support|perform)"
+    r"|I[''\u2019]?m\s+not\s+(?:able|designed)\s+to"
+    r"|unable\s+to\s+(?:proceed|continue|perform|complete)"
+    # 中文：工具/操作不存在或无法继续
+    r"|该工具.{0,8}?不存在|工具.{0,12}?不存在"
+    r"|我(?:无法|不能|不可以)(?:继续|进行|支持|完成|操作|执行)"
+    r"|无法(?:进行|支持|完成|执行).{0,10}?操作"
+    r"|抱歉.{0,20}?(?:无法|不能|不支持)",
+    re.IGNORECASE,
+)
+
+
 log = logging.getLogger("qwen2api.runtime")
 
 
@@ -125,6 +145,7 @@ __all__ = [
     "begin_runtime_attempt",
     "cleanup_runtime_resources",
     "collect_completion_run",
+    "collect_completion_run_with_recovery",
     "continue_after_retry_directive",
     "evaluate_retry_directive",
     "extract_blocked_tool_names",
@@ -450,7 +471,7 @@ async def collect_completion_run(
     tool_sieve = None
     if request.tools:
         tool_sieve = tool_parser.ToolSieve(request.tool_names)
-        log.info("[Collect] Tool Sieve 已启用，工具列表: %s", request.tool_names)
+        log.info("[收集完成] 工具过滤器已启用，工具列表: %s", request.tool_names)
 
     def _strip_textual_tool_wrapper(text: str, detected_calls: list[dict[str, Any]]) -> str:
         if not text or not request.tools or not detected_calls:
@@ -528,17 +549,25 @@ async def collect_completion_run(
         # 检查空输出
         if not detected_tool_calls and not answer_text.strip() and not reasoning_text.strip():
             log.warning(
-                "[Collect] 模型返回空输出: reason=%s chat_id=%s",
+                "[收集完成] 上游返回空输出: 原因=%s 会话=%s",
                 reason,
                 chat_id,
             )
             # 如果有 reasoning 但没有 visible output，说明模型只输出了思考过程
             if reasoning_text.strip():
-                log.warning("[Collect] 模型只返回了推理内容，没有可见输出")
+                log.warning("[收集完成] 模型只返回了推理内容，没有可见输出")
+            # 空响应 flush 该账号池（同批次预热的可能都是坏的），下次走新建
+            try:
+                pool = getattr(client, "executor", None) and getattr(client.executor, "chat_id_pool", None)
+                if pool is not None and acc is not None:
+                    import asyncio as _aio
+                    _aio.create_task(pool.flush_account(acc.email))
+            except Exception:
+                pass
 
         if reason:
             log.info(
-                "[Collect] finalize reason=%s chat_id=%s tool_calls=%s answer_chars=%s reasoning_chars=%s finish_reason=%s",
+                "[收集完成] 原因=%s 会话=%s 工具调用=%s 答复字数=%s 推理字数=%s 结束原因=%s",
                 reason,
                 chat_id,
                 len(detected_tool_calls),
@@ -597,6 +626,25 @@ async def collect_completion_run(
 
         if phase == "answer" and content:
             answer_fragments.append(content)
+
+            # 毒性拒绝早期拦截：Qwen 偶尔幻觉出 "Tool X does not exists." 之类文本。
+            # 在标记 emitted_visible_output 之前识别并提前 finalize，让 evaluate_retry_directive
+            # 的 blocked_tool_name 分支能正常触发重试（否则 emitted=True 后就不 retry 了）。
+            if (
+                request.tools
+                and not emitted_visible_output
+                and len("".join(answer_fragments)) >= 20
+            ):
+                early_answer = "".join(answer_fragments).strip()
+                if _TOXIC_REFUSAL_RE.search(early_answer):
+                    toxic_blocked = extract_blocked_tool_names(early_answer, request.tool_names)
+                    blocked_name = toxic_blocked[0] if toxic_blocked else "unknown"
+                    log.warning(
+                        "[收集完成] 污染拦截 %r (未流出客户端，触发重试)",
+                        early_answer[:80],
+                    )
+                    return _finalize_result(reason=f"blocked_tool_name:{blocked_name}")
+
             emitted_visible_output = True
             if not first_event_marked:
                 metrics.mark("first_event", float(len(raw_events)))
@@ -678,6 +726,132 @@ def parse_tool_directive_once(request: StandardRequest, state: RuntimeAttemptSta
     return RuntimeToolDirective(tool_blocks=[{"type": "text", "text": state.answer_text}], stop_reason="end_turn")
 
 
+# ==================== 截断续写 + 流式 warmup（P2-6 & P2-10 接入）====================
+
+async def collect_completion_run_with_recovery(
+    client,
+    request: StandardRequest,
+    prompt: str,
+    *,
+    capture_events: bool = True,
+    on_delta: Callable[[dict[str, Any], str | None, list[dict[str, Any]] | None], Awaitable[None]] | None = None,
+    max_continuation: int = 2,
+    warmup_chars: int = 0,
+    guard_chars: int = 0,
+) -> RuntimeExecutionResult:
+    """collect_completion_run 的增强版，叠加两个能力：
+
+    1. **截断自动续写**（P2-6）：初始流结束若 answer_text 含未闭合的 ##TOOL_CALL## 块，
+       最多追加 max_continuation 次续写请求，每次丢弃工具定义省上下文预算，
+       用 deduplicate_continuation 去除头尾重叠后拼接。
+
+    2. **流式 warmup/guard**（P2-10）：当 warmup_chars>0 时，用 IncrementalTextStreamer
+       包装 on_delta 的 text 路径——起步累积 warmup_chars 字符后才放行，
+       任何时刻保留末尾 guard_chars 字符暂不发出，给跨 chunk 清洗预留空间。
+
+    保留向后兼容：不传可选参数 → 行为与 collect_completion_run 完全一致。
+    """
+    from backend.services.truncation_recovery import (
+        build_continuation_prompt,
+        deduplicate_continuation,
+        is_truncated,
+    )
+    from backend.services.incremental_text_streamer import IncrementalTextStreamer
+
+    wrapped_on_delta = on_delta
+    streamer: IncrementalTextStreamer | None = None
+    if warmup_chars > 0 and on_delta is not None:
+        streamer = IncrementalTextStreamer(
+            warmup_chars=warmup_chars,
+            guard_chars=max(guard_chars, 64),
+        )
+
+        async def _wrapped(evt, text_chunk, tool_calls):
+            # 仅对纯文本 delta 做 warmup；tool_calls / thinking / native 直接透传
+            if text_chunk is None or tool_calls is not None or evt.get("phase") not in ("answer", "text"):
+                await on_delta(evt, text_chunk, tool_calls)
+                return
+            released = streamer.push(text_chunk)
+            if released:
+                await on_delta(evt, released, None)
+
+        wrapped_on_delta = _wrapped
+
+    result = await collect_completion_run(
+        client, request, prompt,
+        capture_events=capture_events,
+        on_delta=wrapped_on_delta,
+    )
+
+    # 若 warmup 还保留着尾部，flush 出去
+    if streamer is not None and on_delta is not None:
+        tail = streamer.finish()
+        if tail:
+            await on_delta({"phase": "answer"}, tail, None)
+
+    # 截断续写
+    continues = 0
+    while continues < max_continuation:
+        state = result.state
+        # 有已检出的工具调用就不续写（让客户端去执行那个 tool）
+        if state.tool_calls:
+            break
+        # 没 tools 的场景不做续写（纯聊天，截断检测无 ##TOOL_CALL## 参考点会误触发）
+        if not request.tools:
+            break
+        if not is_truncated(state.answer_text):
+            break
+
+        continues += 1
+        log.info(
+            "[TruncRecover] detected unclosed tool call, continuation attempt=%d chat_id=%s len=%d",
+            continues, result.chat_id, len(state.answer_text),
+        )
+
+        assistant_ctx, followup = build_continuation_prompt(state.answer_text, anchor_chars=2000)
+        # 续写 prompt = 原 prompt + assistant 已输出的锚点 + user 续写指令
+        cont_prompt = (
+            f"{prompt.rstrip()}\n\nAssistant: {assistant_ctx}\n\nHuman: {followup}\n\nAssistant:"
+        )
+
+        cont_result = await collect_completion_run(
+            client, request, cont_prompt,
+            capture_events=False,
+            on_delta=on_delta,  # 不经过 streamer，续写内容直接透传
+        )
+        cont_text = cont_result.state.answer_text
+        if not cont_text or not cont_text.strip():
+            log.info("[TruncRecover] empty continuation, stopping")
+            break
+
+        deduped = deduplicate_continuation(state.answer_text, cont_text)
+        if not deduped.strip():
+            log.info("[TruncRecover] continuation fully overlapped existing, stopping")
+            break
+
+        merged_answer = state.answer_text + deduped
+        merged_state = RuntimeAttemptState(
+            answer_text=merged_answer,
+            reasoning_text=state.reasoning_text,
+            tool_calls=cont_result.state.tool_calls or state.tool_calls,
+            blocked_tool_names=cont_result.state.blocked_tool_names or state.blocked_tool_names,
+            finish_reason=cont_result.state.finish_reason or state.finish_reason,
+            raw_events=state.raw_events,
+            emitted_visible_output=state.emitted_visible_output or cont_result.state.emitted_visible_output,
+            stage_metrics=state.stage_metrics,
+        )
+        result = RuntimeExecutionResult(state=merged_state, chat_id=result.chat_id, acc=result.acc)
+        log.info(
+            "[TruncRecover] continuation=%d produced %d new chars; total=%d",
+            continues, len(deduped), len(merged_answer),
+        )
+        # 若续写完成后已闭合则收工
+        if not is_truncated(merged_answer):
+            break
+
+    return result
+
+
 def build_tool_directive(
     request: StandardRequest,
     state: RuntimeAttemptState,
@@ -739,7 +913,9 @@ def build_usage_delta_factory(prompt: str) -> Callable[[RuntimeExecutionResult, 
 
 
 def request_max_attempts(request: StandardRequest) -> int:
-    return 2 if request.tools else settings.MAX_RETRIES
+    # 工具模式下给模型更多重试机会（毒性幻觉/重复调用场景常见），
+    # 原值 2 在多轮 retry 里太容易用完，升到 4
+    return 4 if request.tools else settings.MAX_RETRIES
 
 
 def plan_runtime_attempts(request: StandardRequest, *, initial_prompt: str) -> RuntimeAttemptPlan:
@@ -771,7 +947,7 @@ def evaluate_retry_directive(
 
     def _retry(reason: str, next_prompt: str) -> RuntimeRetryDirective:
         log.info(
-            "[Retry] reason=%s attempt=%s/%s profile=%s blocked=%s finish_reason=%s visible_output=%s",
+            "[重试] 原因=%s 第%s/%s次 客户端=%s 屏蔽=%s 结束原因=%s 已流出=%s",
             reason,
             attempt_index + 1,
             max_attempts,
@@ -953,6 +1129,20 @@ def evaluate_retry_directive(
                     "search_no_results",
                     inject_assistant_message(current_prompt, force_text),
                 )
+
+    # 空响应重试：上游返回 answer_chars=0 tool_calls=0 finish_reason=stop
+    # 典型场景是 Qwen 后端对某个 chat_id 返回空（常见于池化 chat_id 刚建好就被用、
+    # 或 Qwen 服务抖动时）。换账号 + 换新 chat_id 再试一次。
+    if (
+        not state.answer_text
+        and not state.tool_calls
+        and state.finish_reason == "stop"
+        and not state.emitted_visible_output
+    ):
+        return _retry(
+            "empty_upstream_response",
+            current_prompt,  # prompt 不变，让上游重新处理
+        )
 
     return RuntimeRetryDirective(retry=False, next_prompt=current_prompt, reason=None)
 

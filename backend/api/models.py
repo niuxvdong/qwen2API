@@ -25,25 +25,29 @@ async def list_models(request: Request):
     users_db = app.state.users_db
     client: QwenClient = app.state.qwen_client
 
-    auth = await resolve_auth_context(request, users_db)
-    token = auth.token
-    try:
-        upstream_models = await client.list_models(token)
-    except Exception:
-        upstream_models = []
+    # 鉴权（只校验客户端 API KEY，不把它当 Qwen token 用）
+    await resolve_auth_context(request, users_db)
+
+    # 从账号池拿合法 Qwen token 调上游 /api/models，带 5min 缓存
+    upstream_models = await client.list_models_from_pool()
 
     if upstream_models:
-        return JSONResponse({
-            "object": "list",
-            "data": [
-                {
-                    "id": item.get("id") or item.get("model") or item.get("name") or str(item),
-                    "object": "model",
-                    "owned_by": item.get("owned_by", "qwen2api"),
-                }
-                for item in upstream_models
-            ],
-        })
+        data = []
+        for item in upstream_models:
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("id") or item.get("model") or item.get("name")
+            if not model_id:
+                continue
+            data.append({
+                "id": model_id,
+                "object": "model",
+                "owned_by": item.get("owned_by", "qwen"),
+                "created": item.get("created_at") or 0,
+            })
+        return JSONResponse({"object": "list", "data": data})
+
+    # 上游不可用时才回退到静态 MODEL_MAP（包含 gpt-4o/claude 等别名）
     return JSONResponse(_build_model_list_payload())
 
 

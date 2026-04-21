@@ -26,6 +26,12 @@ def _extract_call(payload: object, allowed_names: set[str]) -> dict[str, Any] | 
     if not isinstance(payload, dict):
         return None
 
+    # Qwen / OpenAI 官方单对象格式：{"id":"...","type":"function","function":{"name":...,"arguments":"..."}}
+    # name 和 arguments 嵌在 function 子字段里，不是顶层。向下穿透一层再提取。
+    nested_function = payload.get("function")
+    if isinstance(nested_function, dict) and nested_function.get("name"):
+        payload = nested_function
+
     name = payload.get("name")
     if not name:
         return None
