@@ -26,6 +26,8 @@ def build_openai_completion_payload(*, completion_id: str, created: int, model_n
     else:
         oai_tool_calls = []
         msg = {"role": "assistant", "content": execution.state.answer_text}
+        if execution.state.reasoning_text:
+            msg["reasoning_content"] = execution.state.reasoning_text
         finish_reason = "stop"
 
     log_payload = [

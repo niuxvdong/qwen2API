@@ -94,6 +94,7 @@ class RuntimeAttemptState:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     blocked_tool_names: list[str] = field(default_factory=list)
     finish_reason: str = "stop"
+    empty_upstream_response: bool = False
     raw_events: list[dict[str, Any]] = field(default_factory=list)
     emitted_visible_output: bool = False
     stage_metrics: dict[str, float] = field(default_factory=dict)
@@ -719,7 +720,13 @@ async def run_runtime_attempt(
         state=execution.state,
         allow_after_visible_output=allow_after_visible_output,
     )
-    preserve_chat = bool(getattr(request, 'persistent_session', False))
+    if execution.state.empty_upstream_response:
+        request.skip_prewarmed_chat_ids = True
+        if getattr(request, persistent_session, False) and getattr(request, upstream_chat_id, None):
+            request.session_chat_invalidated = True
+            request.upstream_chat_id = None
+            request.prompt = request.full_prompt or request.prompt
+    preserve_chat = bool(getattr(request, 'persistent_session', False)) and not execution.state.empty_upstream_response
     continuation = await continue_after_retry_directive(
         client=client,
         execution=execution,
@@ -755,6 +762,31 @@ async def collect_completion_run(
     if request.tools:
         tool_sieve = tool_parser.ToolSieve(request.tool_names)
         log.info("[Collect] tool filter enabled: tools=%s", request.tool_names)
+
+    async def cleanup_empty_upstream_state() -> None:
+        if acc is None:
+            return
+        token = getattr(acc, "token", None)
+        pool = getattr(client, "executor", None) and getattr(client.executor, "chat_id_pool", None)
+        if chat_id and token:
+            delete_fn = getattr(client, "delete_chat_reliable", None)
+            if delete_fn is not None:
+                await delete_fn(token, chat_id, source="empty_upstream_response")
+            else:
+                try:
+                    await client.delete_chat(token, chat_id)
+                except Exception as exc:
+                    log.warning("[Collect] delete empty chat failed chat_id=%s error=%s", chat_id, exc)
+        if pool is not None:
+            try:
+                flushed = await pool.flush_account(acc.email)
+                log.warning(
+                    "[Collect] flushed prewarmed chats after empty upstream response account=%s count=%s",
+                    acc.email,
+                    flushed,
+                )
+            except Exception as exc:
+                log.warning("[Collect] flush prewarmed chats failed account=%s error=%s", acc.email, exc)
 
     def _finalize_result(*, reason: str | None = None) -> RuntimeExecutionResult:
         answer_text = "".join(answer_fragments)
@@ -822,20 +854,17 @@ async def collect_completion_run(
                     detected_tool_calls = []
                 if not detected_tool_calls:
                     finish_reason = "invalid_tool_args" if rejected_tool_calls else "stop"
-                    return RuntimeExecutionResult(
-                        state=RuntimeAttemptState(
-                            answer_text=answer_text,
-                            reasoning_text=reasoning_text,
-                            tool_calls=rejected_tool_calls if rejected_tool_calls else [],
-                            blocked_tool_names=[],
-                            finish_reason=finish_reason,
-                            raw_events=raw_events,
-                            emitted_visible_output=emitted_visible_output,
-                            stage_metrics=metrics.as_dict(),
-                        ),
-                        chat_id=chat_id,
-                        acc=acc,
+                    state = RuntimeAttemptState(
+                        answer_text=answer_text,
+                        reasoning_text=reasoning_text,
+                        tool_calls=rejected_tool_calls if rejected_tool_calls else [],
+                        blocked_tool_names=[],
+                        finish_reason=finish_reason,
+                        raw_events=raw_events,
+                        emitted_visible_output=emitted_visible_output,
+                        stage_metrics=metrics.as_dict(),
                     )
+                    return RuntimeExecutionResult(state=state, chat_id=chat_id, acc=acc)
                 final_finish_reason = "tool_calls"
                 _log_tool_calls("final_text_parse", detected_tool_calls)
 
@@ -863,7 +892,8 @@ async def collect_completion_run(
             )
             answer_text = ""
             final_finish_reason = "invalid_tool_args"
-        if not detected_tool_calls and not answer_text.strip() and not reasoning_text.strip():
+        empty_upstream_response = not detected_tool_calls and not answer_text.strip() and not reasoning_text.strip()
+        if empty_upstream_response:
             log.warning(
                 "[Collect] upstream returned empty output: reason=%s chat_id=%s",
                 reason,
@@ -872,14 +902,6 @@ async def collect_completion_run(
             # 濡傛灉鏈?reasoning 浣嗘病鏈?visible output锛岃鏄庢ā鍨嬪彧杈撳嚭浜嗘€濊€冭繃绋?
             if reasoning_text.strip():
                 log.warning("[Collect] upstream returned reasoning only without visible output")
-            # 绌哄搷搴?flush 璇ヨ处鍙锋睜锛堝悓鎵规棰勭儹鐨勫彲鑳介兘鏄潖鐨勶級锛屼笅娆¤蛋鏂板缓
-            try:
-                pool = getattr(client, "executor", None) and getattr(client.executor, "chat_id_pool", None)
-                if pool is not None and acc is not None:
-                    import asyncio as _aio
-                    _aio.create_task(pool.flush_account(acc.email))
-            except Exception:
-                pass
 
         if reason:
             log.info(
@@ -900,6 +922,7 @@ async def collect_completion_run(
             tool_calls=detected_tool_calls,
             blocked_tool_names=extract_blocked_tool_names(answer_text.strip(), request.tool_names),
             finish_reason=final_finish_reason,
+            empty_upstream_response=empty_upstream_response,
             raw_events=raw_events,
             emitted_visible_output=emitted_visible_output,
             stage_metrics=metrics.summary(),
@@ -913,6 +936,8 @@ async def collect_completion_run(
         files=getattr(request, "upstream_files", None),
         fixed_account=getattr(request, "bound_account", None),
         existing_chat_id=getattr(request, "upstream_chat_id", None),
+        delete_on_close=not bool(getattr(request, "persistent_session", False)),
+        use_prewarmed=not bool(getattr(request, "skip_prewarmed_chat_ids", False)),
     ):
         if item.get("type") == "meta":
             chat_id = item.get("chat_id")
@@ -1067,7 +1092,10 @@ async def collect_completion_run(
                     await on_delta(evt, None, completed_calls)
                 return _finalize_result(reason="native_tool_use")
 
-    return _finalize_result(reason="stream_end")
+    execution = _finalize_result(reason="stream_end")
+    if execution.state.empty_upstream_response:
+        await cleanup_empty_upstream_state()
+    return execution
 
 
 def parse_tool_directive_once(request: StandardRequest, state: RuntimeAttemptState) -> RuntimeToolDirective:
@@ -1197,35 +1225,53 @@ async def collect_completion_run_with_recovery(
             on_delta=on_delta,  # 不经过 streamer，续写内容直接透传
             history_messages=history_messages,
         )
-        cont_text = cont_result.state.answer_text
-        if not cont_text or not cont_text.strip():
-            log.info("[TruncRecover] empty continuation, stopping")
-            break
+        try:
+            cont_text = cont_result.state.answer_text
+            if not cont_text or not cont_text.strip():
+                log.info("[TruncRecover] empty continuation, stopping")
+                break
 
-        deduped = deduplicate_continuation(state.answer_text, cont_text)
-        if not deduped.strip():
-            log.info("[TruncRecover] continuation fully overlapped existing, stopping")
-            break
+            deduped = deduplicate_continuation(state.answer_text, cont_text)
+            if not deduped.strip():
+                log.info("[TruncRecover] continuation fully overlapped existing, stopping")
+                break
 
-        merged_answer = state.answer_text + deduped
-        merged_state = RuntimeAttemptState(
-            answer_text=merged_answer,
-            reasoning_text=state.reasoning_text,
-            tool_calls=cont_result.state.tool_calls or state.tool_calls,
-            blocked_tool_names=cont_result.state.blocked_tool_names or state.blocked_tool_names,
-            finish_reason=cont_result.state.finish_reason or state.finish_reason,
-            raw_events=state.raw_events,
-            emitted_visible_output=state.emitted_visible_output or cont_result.state.emitted_visible_output,
-            stage_metrics=state.stage_metrics,
-        )
-        result = RuntimeExecutionResult(state=merged_state, chat_id=result.chat_id, acc=result.acc)
-        log.info(
-            "[TruncRecover] continuation=%d produced %d new chars; total=%d",
-            continues, len(deduped), len(merged_answer),
-        )
-        # 鑻ョ画鍐欏畬鎴愬悗宸查棴鍚堝垯鏀跺伐
-        if not is_truncated(merged_answer):
-            break
+            merged_answer = state.answer_text + deduped
+            merged_state = RuntimeAttemptState(
+                answer_text=merged_answer,
+                reasoning_text=state.reasoning_text,
+                tool_calls=cont_result.state.tool_calls or state.tool_calls,
+                blocked_tool_names=cont_result.state.blocked_tool_names or state.blocked_tool_names,
+                finish_reason=cont_result.state.finish_reason or state.finish_reason,
+                raw_events=state.raw_events,
+                emitted_visible_output=state.emitted_visible_output or cont_result.state.emitted_visible_output,
+                stage_metrics=state.stage_metrics,
+            )
+            result = RuntimeExecutionResult(state=merged_state, chat_id=result.chat_id, acc=result.acc)
+            log.info(
+                "[TruncRecover] continuation=%d produced %d new chars; total=%d",
+                continues, len(deduped), len(merged_answer),
+            )
+            # 鑻ョ画鍐欏畬鎴愬悗宸查棴鍚堝垯鏀跺伐
+            if not is_truncated(merged_answer):
+                break
+        finally:
+            bound_account = getattr(request, "bound_account", None)
+            preserve_continuation_chat = bool(getattr(request, "persistent_session", False))
+            if cont_result.acc is not None and bound_account is not None and cont_result.acc is bound_account:
+                if not preserve_continuation_chat and cont_result.chat_id and getattr(cont_result.acc, "token", None):
+                    await client.delete_chat_reliable(
+                        cont_result.acc.token,
+                        cont_result.chat_id,
+                        source="truncation_recovery",
+                    )
+            else:
+                await cleanup_runtime_resources(
+                    client,
+                    cont_result.acc,
+                    cont_result.chat_id,
+                    preserve_chat=preserve_continuation_chat,
+                )
 
     return result
 
@@ -1488,7 +1534,7 @@ def evaluate_retry_directive(
                     )
 
     if (
-        not state.answer_text
+        (state.empty_upstream_response or not state.answer_text)
         and not state.tool_calls
         and state.finish_reason == "stop"
         and not state.emitted_visible_output
@@ -1514,9 +1560,11 @@ async def cleanup_runtime_resources(client, acc, chat_id: str | None, *, preserv
     if preserve_chat:
         return
     if chat_id and token:
-        async def _delete_chat_later() -> None:
-            try:
-                await client.delete_chat(token, chat_id)
-            except Exception as exc:
-                log.debug("[Cleanup] delete_chat failed chat_id=%s error=%s", chat_id, exc)
-        asyncio.create_task(_delete_chat_later())
+        delete_fn = getattr(client, "delete_chat_reliable", None)
+        if delete_fn is not None:
+            await delete_fn(token, chat_id, source="runtime_cleanup")
+            return
+        try:
+            await client.delete_chat(token, chat_id)
+        except Exception as exc:
+            log.warning("[Cleanup] delete_chat failed chat_id=%s error=%s", chat_id, exc)

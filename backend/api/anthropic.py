@@ -19,6 +19,7 @@ from backend.runtime.execution import (
     request_max_attempts,
 )
 from backend.services.auth_quota import resolve_auth_context
+from backend.services.completion_bridge import force_fresh_chat_after_empty_response, is_empty_upstream_response
 from backend.services.context_attachment_manager import prepare_context_attachments, derive_session_key
 from backend.services.attachment_preprocessor import preprocess_attachments
 from backend.services.prompt_builder import CLAUDE_CODE_OPENAI_PROFILE, messages_to_prompt
@@ -184,6 +185,11 @@ async def _run_anthropic_attempt(
         allow_after_visible_output=True,
     )
     return execution, retry
+
+
+def _prepare_retry_after_anthropic_empty_response(*, standard_request: StandardRequest, retry, fallback_prompt: str) -> str:
+    force_fresh_chat_after_empty_response(standard_request)
+    return standard_request.prompt or retry.next_prompt or fallback_prompt
 
 
 def _visible_answer_text_length(*, directive, execution, stream_state: _AnthropicStreamState | None = None) -> int:
@@ -375,11 +381,18 @@ async def anthropic_messages(request: Request):
                                 allow_after_visible_output=True,
                             )
                             if retry.retry:
+                                empty_response = is_empty_upstream_response(execution)
                                 reused_persistent_chat = bool(standard_request.persistent_session and standard_request.upstream_chat_id)
                                 # 濡傛灉姝ｅ湪澶嶇敤浼氳瘽锛岄噸璇曟椂淇濈暀浼氳瘽锛岄伩鍏嶅垹闄ゅ悗閲嶅缓瀵艰嚧涓婁笅鏂囦涪澶?
-                                preserve_chat = reused_persistent_chat
+                                preserve_chat = reused_persistent_chat and not empty_response
                                 await cleanup_runtime_resources(client, execution.acc, execution.chat_id, preserve_chat=preserve_chat)
-                                if reused_persistent_chat:
+                                if empty_response:
+                                    current_prompt = _prepare_retry_after_anthropic_empty_response(
+                                        standard_request=standard_request,
+                                        retry=retry,
+                                        fallback_prompt=current_prompt,
+                                    )
+                                elif reused_persistent_chat:
                                     # 淇濈暀 upstream_chat_id锛屽湪鍚屼竴浼氳瘽涓噸璇?
                                     # standard_request.session_chat_invalidated = True
                                     # standard_request.upstream_chat_id = None
@@ -388,6 +401,11 @@ async def anthropic_messages(request: Request):
                                     current_prompt = retry.next_prompt
                                 await _reacquire_bound_account_if_needed(client=client, standard_request=standard_request)
                                 continue
+
+                            if is_empty_upstream_response(execution):
+                                force_fresh_chat_after_empty_response(standard_request)
+                                await cleanup_runtime_resources(client, execution.acc, execution.chat_id, preserve_chat=False)
+                                raise RuntimeError("empty upstream response after retries")
 
                             if not stream_state.pending_chunks:
                                 stream_state.pending_chunks.append(_message_start_event(msg_id, model_name, current_prompt, execution.state.answer_text))
@@ -507,11 +525,18 @@ async def anthropic_messages(request: Request):
                         max_attempts=max_attempts,
                     )
                     if retry.retry:
+                        empty_response = is_empty_upstream_response(execution)
                         reused_persistent_chat = bool(standard_request.persistent_session and standard_request.upstream_chat_id)
                         # 濡傛灉姝ｅ湪澶嶇敤浼氳瘽锛岄噸璇曟椂淇濈暀浼氳瘽锛岄伩鍏嶅垹闄ゅ悗閲嶅缓瀵艰嚧涓婁笅鏂囦涪澶?
-                        preserve_chat = reused_persistent_chat
+                        preserve_chat = reused_persistent_chat and not empty_response
                         await cleanup_runtime_resources(client, execution.acc, execution.chat_id, preserve_chat=preserve_chat)
-                        if reused_persistent_chat:
+                        if empty_response:
+                            current_prompt = _prepare_retry_after_anthropic_empty_response(
+                                standard_request=standard_request,
+                                retry=retry,
+                                fallback_prompt=current_prompt,
+                            )
+                        elif reused_persistent_chat:
                             # 淇濈暀 upstream_chat_id锛屽湪鍚屼竴浼氳瘽涓噸璇?
                             # standard_request.session_chat_invalidated = True
                             # standard_request.upstream_chat_id = None
@@ -520,6 +545,11 @@ async def anthropic_messages(request: Request):
                             current_prompt = retry.next_prompt
                         await _reacquire_bound_account_if_needed(client=client, standard_request=standard_request)
                         continue
+
+                    if is_empty_upstream_response(execution):
+                        force_fresh_chat_after_empty_response(standard_request)
+                        await cleanup_runtime_resources(client, execution.acc, execution.chat_id, preserve_chat=False)
+                        raise RuntimeError("empty upstream response after retries")
 
                     directive = build_tool_directive(standard_request, execution.state, history_messages=history_messages)
                     _log_response_tool_blocks("json_response", directive.tool_blocks)

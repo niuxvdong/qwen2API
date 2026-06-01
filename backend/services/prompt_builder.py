@@ -430,9 +430,9 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
             elif role == "assistant":
                 max_len = 500
             else:
-                max_len = 1600
+                max_len = max(1600, budget - used - len("Human: ") - 2)
         else:
-            max_len = 600 if is_tool_result else 1400
+            max_len = 600 if is_tool_result else max(1400, budget - used - len("Human: ") - 2)
         if len(text) > max_len:
             text = text[:max_len] + "...[truncated]"
         is_tool_result_only_user_msg = role == "user" and not user_text_only.strip() and bool(text.strip())
@@ -485,7 +485,8 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
     if latest_user:
         latest_text = _extract_user_text_only(latest_user.get("content", ""), client_profile=client_profile).strip()
         if latest_text:
-            latest_short = latest_text[:900] + ("...[latest task truncated]" if len(latest_text) > 900 else "")
+            latest_budget = max(900, budget - used - len("Human (CURRENT TASK - TOP PRIORITY): ") - 2)
+            latest_short = latest_text[:latest_budget] + ("...[latest task truncated]" if len(latest_text) > latest_budget else "")
             latest_user_line = f"Human (CURRENT TASK - TOP PRIORITY): {latest_short}"
 
     latest_user_is_tool_related = _looks_tool_related(latest_text)

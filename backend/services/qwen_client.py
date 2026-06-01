@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -6,6 +7,7 @@ from typing import AsyncIterator
 import httpx
 
 from backend.core.account_pool import AccountPool
+from backend.core.config import settings
 from backend.services.auth_resolver import BASE_URL, AuthResolver
 from backend.upstream.payload_builder import build_chat_payload
 from backend.upstream.qwen_executor import QwenExecutor
@@ -69,7 +71,50 @@ class QwenClient:
         return await self.executor.create_chat(token, model, chat_type=chat_type, use_prewarmed=use_prewarmed)
 
     async def delete_chat(self, token: str, chat_id: str):
-        await self._request_json("DELETE", f"/api/v2/chats/{chat_id}", token, timeout=20.0)
+        if not token or not chat_id:
+            return True
+        res = await self._request_json("DELETE", f"/api/v2/chats/{chat_id}", token, timeout=20.0)
+        status = int(res.get("status") or 0)
+        if status in (200, 204, 404):
+            return True
+        body = (res.get("body") or "")[:200]
+        raise RuntimeError(f"delete_chat HTTP {status}: {body}")
+
+    async def delete_chat_reliable(
+        self,
+        token: str,
+        chat_id: str,
+        *,
+        source: str = "cleanup",
+        attempts: int | None = None,
+        base_delay: float | None = None,
+    ) -> bool:
+        """Best-effort chat deletion with bounded retries."""
+        if not token or not chat_id:
+            return True
+        max_attempts = max(1, int(attempts or settings.CHAT_DELETE_RETRY_ATTEMPTS))
+        delay = max(0.0, float(base_delay if base_delay is not None else settings.CHAT_DELETE_RETRY_DELAY_SECONDS))
+        last_error: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await self.delete_chat(token, chat_id)
+                log.debug("[DeleteChat] deleted chat_id=%s source=%s attempt=%s", chat_id, source, attempt)
+                return True
+            except Exception as exc:
+                last_error = exc
+                if attempt >= max_attempts:
+                    break
+                log.warning(
+                    "[DeleteChat] retry chat_id=%s source=%s attempt=%s/%s error=%s",
+                    chat_id,
+                    source,
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+                await asyncio.sleep(delay * attempt)
+        log.warning("[DeleteChat] failed chat_id=%s source=%s error=%s", chat_id, source, last_error)
+        return False
 
     async def list_chats(self, token: str, limit: int = 50) -> list[dict]:
         res = await self._request_json("GET", f"/api/v2/chats?limit={limit}", token, timeout=20.0)
@@ -338,14 +383,33 @@ class QwenClient:
             if acc is not None:
                 self.account_pool.release(acc)
 
-    def _build_payload(self, chat_id: str, model: str, content: str, has_custom_tools: bool = False, files: list[dict] | None = None) -> dict:
-        return build_chat_payload(chat_id, model, content, has_custom_tools, files=files)
+    def _build_payload(
+        self,
+        chat_id: str,
+        model: str,
+        content: str,
+        has_custom_tools: bool = False,
+        files: list[dict] | None = None,
+        chat_type: str = "t2t",
+        image_options: dict | None = None,
+    ) -> dict:
+        return build_chat_payload(chat_id, model, content, has_custom_tools, files=files, chat_type=chat_type, image_options=image_options)
 
     def parse_sse_chunk(self, chunk: str) -> list[dict]:
         return parse_sse_chunk(chunk)
 
-    async def stream(self, token: str, chat_id: str, model: str, content: str, has_custom_tools: bool = False, files: list[dict] | None = None):
-        async for event in self.executor.stream(token, chat_id, model, content, has_custom_tools, files=files):
+    async def stream(
+        self,
+        token: str,
+        chat_id: str,
+        model: str,
+        content: str,
+        has_custom_tools: bool = False,
+        files: list[dict] | None = None,
+        chat_type: str = "t2t",
+        image_options: dict | None = None,
+    ):
+        async for event in self.executor.stream(token, chat_id, model, content, has_custom_tools, files=files, chat_type=chat_type, image_options=image_options):
             yield event
 
     async def stream_chat_once(self, token: str, chat_id: str, payload: dict) -> AsyncIterator[dict]:
@@ -353,7 +417,7 @@ class QwenClient:
         async with self._http_client.stream(
             "POST",
             f"{BASE_URL}/api/v2/chat/completions?chat_id={chat_id}",
-            headers=self._build_headers(token),
+            headers={**self._build_headers(token), "Accept": "text/event-stream"},
             json=payload,
         ) as resp:
             if resp.status_code != 200:
@@ -373,6 +437,10 @@ class QwenClient:
         files: list[dict] | None = None,
         fixed_account=None,
         existing_chat_id: str | None = None,
+        delete_on_close: bool = False,
+        use_prewarmed: bool = True,
+        chat_type: str = "t2t",
+        image_options: dict | None = None,
     ):
         async for item in self.executor.chat_stream_events_with_retry(
             model,
@@ -381,5 +449,9 @@ class QwenClient:
             files=files,
             fixed_account=fixed_account,
             existing_chat_id=existing_chat_id,
+            delete_on_close=delete_on_close,
+            use_prewarmed=use_prewarmed,
+            chat_type=chat_type,
+            image_options=image_options,
         ):
             yield item

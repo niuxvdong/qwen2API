@@ -10,11 +10,9 @@ async def _delete_stale_chat(client, acc, chat_id: str, chat_id_pool) -> None:
         return
     if chat_id_pool is not None:
         await chat_id_pool.invalidate(acc.email, chat_id)
-    try:
-        await client.delete_chat(acc.token, chat_id)
+    ok = await client.delete_chat_reliable(acc.token, chat_id, source="gc_stale_chat")
+    if ok:
         log.debug("[GC] deleted stale chat account=%s chat_id=%s", acc.email, chat_id)
-    except Exception as exc:
-        log.debug("[GC] delete stale chat failed account=%s chat_id=%s error=%s", acc.email, chat_id, exc)
 
 
 async def garbage_collect_chats(app):
@@ -49,6 +47,6 @@ async def garbage_collect_chats(app):
                         continue
                     if chat_id and chat_id in pooled_chat_ids:
                         continue
-                    asyncio.create_task(_delete_stale_chat(client, acc, chat_id, chat_id_pool))
+                    await _delete_stale_chat(client, acc, chat_id, chat_id_pool)
             except Exception as e:
                 log.warning(f"[GC] account {acc.email} cleanup failed: {e}")

@@ -39,3 +39,4 @@ class StandardRequest:
     workspace_root: str | None = None
     retry_blocked_tools: list[str] = field(default_factory=list)
     retry_read_blocklist: list[str] = field(default_factory=list)
+    skip_prewarmed_chat_ids: bool = False

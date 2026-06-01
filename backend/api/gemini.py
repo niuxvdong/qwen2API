@@ -12,6 +12,7 @@ from backend.core.request_logging import new_request_id, request_context, update
 from backend.runtime import stream_presenter
 from backend.runtime.execution import collect_completion_run, cleanup_runtime_resources
 from backend.services.auth_quota import resolve_auth_context
+from backend.services.completion_bridge import force_fresh_chat_after_empty_response, is_empty_upstream_response
 from backend.services.token_calc import calculate_usage
 
 log = logging.getLogger("qwen2api.gemini")
@@ -65,6 +66,10 @@ async def gemini_generate_content(model: str, request: Request):
 
         try:
             execution = await collect_completion_run(client, standard_request, content)
+            if is_empty_upstream_response(execution):
+                force_fresh_chat_after_empty_response(standard_request)
+                await cleanup_runtime_resources(client, execution.acc, execution.chat_id, preserve_chat=False)
+                raise RuntimeError("empty upstream response")
         except Exception as e:
             log.error(f"Gemini proxy failed: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -119,6 +124,10 @@ async def gemini_stream_generate_content(model: str, request: Request):
                         capture_events=False,
                         on_delta=on_delta,
                     )
+                    if is_empty_upstream_response(execution):
+                        force_fresh_chat_after_empty_response(standard_request)
+                        await cleanup_runtime_resources(client, execution.acc, execution.chat_id, preserve_chat=False)
+                        raise RuntimeError("empty upstream response")
 
                     usage = calculate_usage(content, execution.state.answer_text)
                     users = await users_db.get()

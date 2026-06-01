@@ -12,9 +12,9 @@ from backend.core.request_logging import new_request_id, request_context, update
 from backend.services.attachment_preprocessor import preprocess_attachments
 from backend.services.context_attachment_manager import prepare_context_attachments, derive_session_key
 from backend.services.auth_quota import resolve_auth_context
+from backend.services.client_profiles import detect_openai_client_profile
 from backend.services.completion_bridge import run_retryable_completion_bridge
 from backend.services.openai_stream_translator import OpenAIStreamTranslator
-from backend.services.prompt_builder import CLAUDE_CODE_OPENAI_PROFILE, OPENCLAW_OPENAI_PROFILE
 from backend.services.response_formatters import build_openai_completion_payload
 from backend.services.qwen_client import QwenClient
 from backend.services.standard_request_builder import build_chat_standard_request
@@ -33,10 +33,7 @@ OpenAIDeltaHandler = Callable[[dict[str, Any], str | None, list[dict[str, Any]] 
 
 
 def _detect_openai_client_profile(request: Request, req_data: dict) -> str:
-    del req_data
-    if request.headers.get("x-anthropic-billing-header"):
-        return CLAUDE_CODE_OPENAI_PROFILE
-    return OPENCLAW_OPENAI_PROFILE
+    return detect_openai_client_profile(request.headers, req_data)
 
 
 def _build_standard_request(req_data: dict, *, client_profile: str) -> StandardRequest:

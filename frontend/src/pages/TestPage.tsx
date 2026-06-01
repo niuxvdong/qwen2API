@@ -45,8 +45,116 @@ function MessageContent({ content }: { content: string }) {
   return <div className="whitespace-pre-wrap leading-relaxed">{nodes}</div>
 }
 
+type ChatMessage = { role: string; content: string; reasoning?: string; error?: boolean }
+const TYPEWRITER_CHUNK_SIZE = 2
+const TYPEWRITER_DELAY_MS = 24
+
+function asText(value: unknown): string {
+  return typeof value === "string" ? value : ""
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {}
+}
+
+function extractTextFromContent(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content
+    .map(part => {
+      const block = asRecord(part)
+      const type = asText(block.type)
+      if (type === "thinking" || type === "reasoning" || type === "reasoning_text") {
+        return ""
+      }
+      if (type === "text" || type === "output_text" || type === "message") {
+        return asText(block.text) || asText(block.content)
+      }
+      return asText(block.text) || asText(block.content)
+    })
+    .join("")
+}
+
+function readReasoningFields(value: unknown): string {
+  const record = asRecord(value)
+  const extra = asRecord(record.extra)
+  return (
+    asText(record.reasoning_content) ||
+    asText(record.reasoning) ||
+    asText(record.reasoning_text) ||
+    asText(record.thinking) ||
+    asText(record.thoughts) ||
+    asText(extra.reasoning_content) ||
+    asText(extra.reasoning) ||
+    asText(extra.reasoning_text) ||
+    asText(extra.thinking) ||
+    asText(extra.thoughts)
+  )
+}
+
+function splitInlineThinking(content: string, reasoning = ""): { content: string; reasoning: string } {
+  if (!content || !/<think[\s>]/i.test(content)) return { content, reasoning }
+  let visible = ""
+  let thoughts = reasoning
+  let cursor = 0
+  for (const match of content.matchAll(/<think[^>]*>([\s\S]*?)<\/think>/gi)) {
+    visible += content.slice(cursor, match.index)
+    thoughts += match[1] || ""
+    cursor = (match.index ?? 0) + match[0].length
+  }
+  visible += content.slice(cursor)
+  return { content: visible, reasoning: thoughts }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, ms))
+}
+
+function extractReasoningFromContent(content: unknown): string {
+  if (!Array.isArray(content)) return ""
+  return content
+    .map(part => {
+      const block = asRecord(part)
+      const type = block.type
+      if (type === "thinking") return asText(block.thinking)
+      if (type === "reasoning_text") return asText(block.text)
+      if (type === "reasoning") return asText(block.text) || asText(block.reasoning)
+      return readReasoningFields(block)
+    })
+    .join("")
+}
+
+function normalizeAssistantMessage(message: unknown): ChatMessage {
+  const msg = asRecord(message)
+  const inline = splitInlineThinking(extractTextFromContent(msg.content), readReasoningFields(msg) || extractReasoningFromContent(msg.content))
+  return {
+    role: asText(msg.role) || "assistant",
+    content: inline.content,
+    ...(inline.reasoning ? { reasoning: inline.reasoning } : {}),
+  }
+}
+
+function extractStreamDelta(payload: unknown): { content: string; reasoning: string } {
+  const data = asRecord(payload)
+  const responseEventType = asText(data.type)
+  if (responseEventType === "response.reasoning_text.delta") {
+    return { content: "", reasoning: asText(data.delta) }
+  }
+  if (responseEventType === "response.output_text.delta") {
+    return splitInlineThinking(asText(data.delta))
+  }
+
+  const choices = Array.isArray(data.choices) ? data.choices : []
+  const choice = asRecord(choices[0])
+  const delta = asRecord(choice.delta)
+  const message = asRecord(choice.message)
+  const content = extractTextFromContent(delta.content) || extractTextFromContent(message.content) || extractTextFromContent(data.content)
+  const reasoning = readReasoningFields(delta) || readReasoningFields(message) || readReasoningFields(data) || extractReasoningFromContent(delta.content) || extractReasoningFromContent(message.content)
+  return splitInlineThinking(content, reasoning)
+}
+
 export default function TestPage() {
-  const [messages, setMessages] = useState<{ role: string; content: string; reasoning?: string; error?: boolean }[]>([])
+  const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState("")
   const [loading, setLoading] = useState(false)
   const [model, setModel] = useState("qwen3.6-plus")
@@ -79,6 +187,38 @@ export default function TestPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const appendAssistantDelta = (content: string, reasoning: string) => {
+    if (!content && !reasoning) return
+    setMessages(prev => {
+      const msgs = [...prev]
+      const last = msgs[msgs.length - 1] ?? { role: "assistant", content: "" }
+      msgs[msgs.length - 1] = {
+        ...last,
+        content: (last.content || "") + content,
+        reasoning: (last.reasoning || "") + reasoning,
+      }
+      return msgs
+    })
+  }
+
+  const appendAssistantTypewriter = async (message: ChatMessage) => {
+    setMessages(prev => [...prev, { role: "assistant", content: "" }])
+    let pendingReasoning = message.reasoning || ""
+    let pendingContent = message.content || ""
+    while (pendingReasoning || pendingContent) {
+      if (pendingReasoning) {
+        const chunk = pendingReasoning.slice(0, TYPEWRITER_CHUNK_SIZE)
+        pendingReasoning = pendingReasoning.slice(chunk.length)
+        appendAssistantDelta("", chunk)
+      } else {
+        const chunk = pendingContent.slice(0, TYPEWRITER_CHUNK_SIZE)
+        pendingContent = pendingContent.slice(chunk.length)
+        appendAssistantDelta(chunk, "")
+      }
+      await sleep(TYPEWRITER_DELAY_MS)
+    }
+  }
+
   const handleSend = async () => {
     if (!input.trim() || loading) return
     const userMsg = { role: "user", content: input }
@@ -91,13 +231,13 @@ export default function TestPage() {
         const res = await fetch(`${API_BASE}/v1/chat/completions`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...getAuthHeader() },
-          body: JSON.stringify({ model, messages: [...messages, userMsg], stream: false })
+          body: JSON.stringify({ model, messages: [...messages, userMsg], stream: false, include_reasoning: true })
         })
         const data = await res.json()
         if (data.error) {
           setMessages(prev => [...prev, { role: "assistant", content: `❌ ${data.error}`, error: true }])
         } else if (data.choices?.[0]) {
-          setMessages(prev => [...prev, data.choices[0].message])
+          await appendAssistantTypewriter(normalizeAssistantMessage(data.choices[0].message))
         } else {
           setMessages(prev => [...prev, { role: "assistant", content: `❌ 未知响应: ${JSON.stringify(data)}`, error: true }])
         }
@@ -105,7 +245,7 @@ export default function TestPage() {
         const res = await fetch(`${API_BASE}/v1/chat/completions`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...getAuthHeader() },
-          body: JSON.stringify({ model, messages: [...messages, userMsg], stream: true })
+          body: JSON.stringify({ model, messages: [...messages, userMsg], stream: true, include_reasoning: true })
         })
 
         if (!res.ok) {
@@ -120,46 +260,126 @@ export default function TestPage() {
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
         let hasContent = false
+        let hasTerminalError = false
+        const outputQueue = { content: "", reasoning: "" }
+        let typewriterRunning = false
+
+        const runTypewriter = async () => {
+          if (typewriterRunning) return
+          typewriterRunning = true
+          try {
+            while (outputQueue.reasoning || outputQueue.content) {
+              if (outputQueue.reasoning) {
+                const chunk = outputQueue.reasoning.slice(0, TYPEWRITER_CHUNK_SIZE)
+                outputQueue.reasoning = outputQueue.reasoning.slice(chunk.length)
+                appendAssistantDelta("", chunk)
+              } else {
+                const chunk = outputQueue.content.slice(0, TYPEWRITER_CHUNK_SIZE)
+                outputQueue.content = outputQueue.content.slice(chunk.length)
+                appendAssistantDelta(chunk, "")
+              }
+              await sleep(TYPEWRITER_DELAY_MS)
+            }
+          } finally {
+            typewriterRunning = false
+            if (outputQueue.reasoning || outputQueue.content) void runTypewriter()
+          }
+        }
+
+        const enqueueAssistantDelta = (content: string, reasoning: string) => {
+          if (!content && !reasoning) return
+          hasContent = true
+          outputQueue.content += content
+          outputQueue.reasoning += reasoning
+          void runTypewriter()
+        }
+
+        const waitForTypewriter = async () => {
+          while (typewriterRunning || outputQueue.reasoning || outputQueue.content) {
+            await sleep(20)
+          }
+        }
+
+        let currentEventData = ""
+
+        const processSsePayload = (payload: string) => {
+          const trimmedPayload = payload.trim()
+          if (!trimmedPayload || trimmedPayload === "[DONE]") return
+
+          try {
+            const data = JSON.parse(trimmedPayload)
+            if (data.error) {
+              outputQueue.content = ""
+              outputQueue.reasoning = ""
+              setMessages(prev => {
+                const msgs = [...prev]
+                msgs[msgs.length - 1] = { role: "assistant", content: `❌ ${data.error}`, error: true }
+                return msgs
+              })
+              hasContent = true
+              hasTerminalError = true
+              return
+            }
+            const { content, reasoning } = extractStreamDelta(data)
+            enqueueAssistantDelta(content, reasoning)
+          } catch {
+            // Keep the test page resilient to malformed payloads without aborting the stream.
+          }
+        }
+
+        let buffer = ""
+
+        const dispatchSseEvent = () => {
+          if (!currentEventData) return
+          const payload = currentEventData
+          currentEventData = ""
+          processSsePayload(payload)
+        }
+
+        const processSseLine = (rawLine: string) => {
+          const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine
+          if (line === "") {
+            dispatchSseEvent()
+            return
+          }
+          if (line.startsWith(":")) return
+          if (!line.startsWith("data:")) return
+
+          const data = line.startsWith("data: ") ? line.slice(6) : line.slice(5)
+          currentEventData += currentEventData ? `\n${data}` : data
+        }
+
+        const processSseChunk = (chunk: string) => {
+          if (!chunk) return
+          buffer += chunk
+          const lines = buffer.split("\n")
+          buffer = lines.pop() ?? ""
+          for (const line of lines) {
+            processSseLine(line)
+            if (hasTerminalError) break
+          }
+        }
 
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
 
-          const chunk = decoder.decode(value, { stream: true })
-          for (const rawLine of chunk.split("\n")) {
-            const line = rawLine.trim()
-            if (!line || line.startsWith(":") || line === "data: [DONE]") continue
-            if (line.startsWith("data: ")) {
-              try {
-                const data = JSON.parse(line.slice(6))
-                if (data.error) {
-                  setMessages(prev => {
-                    const msgs = [...prev]
-                    msgs[msgs.length - 1] = { role: "assistant", content: `❌ ${data.error}`, error: true }
-                    return msgs
-                  })
-                  hasContent = true
-                  break
-                }
-                const content: string = data.choices?.[0]?.delta?.content ?? ""
-                const reasoning: string = data.choices?.[0]?.delta?.reasoning_content ?? ""
-                if (content || reasoning) {
-                  hasContent = true
-                  setMessages(prev => {
-                    const msgs = [...prev]
-                    const last = msgs[msgs.length - 1]
-                    msgs[msgs.length - 1] = {
-                      ...last,
-                      content: last.content + content,
-                      reasoning: (last.reasoning || "") + reasoning,
-                    }
-                    return msgs
-                  })
-                }
-              } catch { /* skip */ }
-            }
-          }
+          processSseChunk(decoder.decode(value, { stream: true }))
+          if (hasTerminalError) break
         }
+
+        if (!hasTerminalError) {
+          processSseChunk(decoder.decode())
+          if (buffer) {
+            processSseLine(buffer)
+            buffer = ""
+          }
+          dispatchSseEvent()
+        } else {
+          decoder.decode()
+        }
+
+        await waitForTypewriter()
 
         if (!hasContent) {
           setMessages(prev => {

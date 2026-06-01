@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     RATE_LIMIT_BASE_COOLDOWN: int = int(os.getenv("RATE_LIMIT_BASE_COOLDOWN", 600))
     RATE_LIMIT_MAX_COOLDOWN: int = int(os.getenv("RATE_LIMIT_MAX_COOLDOWN", 3600))
 
+    # 上游 chat 生命周期：默认每次请求结束后删除 Qwen 会话，删除失败有限重试。
+    CHAT_DELETE_RETRY_ATTEMPTS: int = int(os.getenv("CHAT_DELETE_RETRY_ATTEMPTS", 3))
+    CHAT_DELETE_RETRY_DELAY_SECONDS: float = float(os.getenv("CHAT_DELETE_RETRY_DELAY_SECONDS", 0.5))
+    CHAT_ID_PREWARM_TARGET_PER_ACCOUNT: int = int(os.getenv("CHAT_ID_PREWARM_TARGET_PER_ACCOUNT", 5))
+    CHAT_ID_PREWARM_TTL_SECONDS: int = int(os.getenv("CHAT_ID_PREWARM_TTL_SECONDS", 120))
+
     # 日志
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 

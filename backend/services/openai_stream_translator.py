@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable
 
 from backend.adapter.standard_request import CLAUDE_CODE_OPENAI_PROFILE, OPENCLAW_OPENAI_PROFILE
@@ -39,6 +40,88 @@ class OpenAIStreamTranslator:
         self.tool_calls_emitted = False
         self.tool_text_detection_mode = self._resolve_tool_text_detection_mode(client_profile)
         self.tool_call_finalize_mode = self._resolve_tool_call_finalize_mode(client_profile)
+        self.in_think_block = False
+        self.pending_think_text = ""
+
+    @staticmethod
+    def _partial_tag_suffix_len(text: str, tag_prefixes: tuple[str, ...]) -> int:
+        lowered = text.lower()
+        best = 0
+        for prefix in tag_prefixes:
+            limit = min(len(prefix) - 1, len(lowered))
+            for length in range(1, limit + 1):
+                if lowered.endswith(prefix[:length]):
+                    best = max(best, length)
+        return best
+
+    def _may_contain_think_marker(self, text_chunk: str) -> bool:
+        if self.in_think_block or self.pending_think_text:
+            return True
+        lowered = text_chunk.lower()
+        if "<think" in lowered or "</think" in lowered:
+            return True
+        return self._partial_tag_suffix_len(text_chunk, ("<think", "<thinking")) > 0
+
+    def _emit_split_think_content(self, text_chunk: str) -> bool:
+        """Split streamed <think>...</think> blocks even when tags cross chunks."""
+        if not self._may_contain_think_marker(text_chunk):
+            return False
+
+        text = self.pending_think_text + text_chunk
+        self.pending_think_text = ""
+        emitted = False
+
+        while text:
+            if self.in_think_block:
+                close_match = re.search(r"</think(?:ing)?>", text, flags=re.IGNORECASE)
+                if close_match:
+                    reasoning = text[:close_match.start()]
+                    if reasoning:
+                        self._emit_reasoning_chunk(reasoning)
+                        emitted = True
+                    text = text[close_match.end():]
+                    self.in_think_block = False
+                    emitted = True
+                    continue
+
+                hold = self._partial_tag_suffix_len(text, ("</think", "</thinking"))
+                reasoning = text[:-hold] if hold else text
+                if reasoning:
+                    self._emit_reasoning_chunk(reasoning)
+                    emitted = True
+                self.pending_think_text = text[-hold:] if hold else ""
+                break
+
+            open_match = re.search(r"<think(?:ing)?[^>]*>", text, flags=re.IGNORECASE)
+            if open_match:
+                before = text[:open_match.start()]
+                if before:
+                    self._emit_content_chunk(before)
+                    emitted = True
+                text = text[open_match.end():]
+                self.in_think_block = True
+                emitted = True
+                continue
+
+            hold = self._partial_tag_suffix_len(text, ("<think", "<thinking"))
+            before = text[:-hold] if hold else text
+            if before:
+                self._emit_content_chunk(before)
+                emitted = True
+            self.pending_think_text = text[-hold:] if hold else ""
+            break
+
+        return emitted or bool(self.pending_think_text) or self.in_think_block
+
+    def _flush_pending_think_text(self) -> None:
+        if not self.pending_think_text:
+            return
+        if self.in_think_block:
+            self._emit_reasoning_chunk(self.pending_think_text)
+        else:
+            self._emit_content_chunk(self.pending_think_text)
+        self.pending_think_text = ""
+        self.in_think_block = False
 
     @staticmethod
     def _resolve_tool_text_detection_mode(client_profile: str) -> str:
@@ -148,6 +231,8 @@ class OpenAIStreamTranslator:
 
         if text_chunk and evt.get("phase") == "answer":
             self.answer_fragments.append(text_chunk)
+            if self._emit_split_think_content(text_chunk):
+                return
             if self._looks_like_tool_output(text_chunk):
                 self.buffered_toolish_fragments.append(text_chunk)
             elif self.buffered_toolish_fragments:
@@ -171,6 +256,7 @@ class OpenAIStreamTranslator:
             self.tool_calls_emitted = True
 
     def finalize(self, finish_reason: str) -> list[str]:
+        self._flush_pending_think_text()
         final_finish_reason = finish_reason
         buffered_text = "".join(self.buffered_toolish_fragments)
         if self.build_final_directive is not None and not self.tool_calls_emitted:

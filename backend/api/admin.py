@@ -297,7 +297,7 @@ async def update_settings(data: dict, request: Request):
     if "chat_id_pool_target" in data or "chat_id_pool_ttl_seconds" in data:
         cp = getattr(request.app.state, "chat_id_pool", None)
         if cp is not None:
-            cp.update_config(
+            await cp.apply_config(
                 target=data.get("chat_id_pool_target"),
                 ttl_seconds=data.get("chat_id_pool_ttl_seconds"),
             )
