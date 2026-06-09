@@ -1,100 +1,69 @@
-# qwen2API
+[English](README.md) | [简体中文](README_CN.md)
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Release-v2.0.0-0ea5e9?style=for-the-badge" alt="Release v2.0.0" />
-  <img src="https://img.shields.io/badge/Legacy-v1.0%20Python-64748b?style=for-the-badge" alt="Legacy v1.0 Python" />
-  <img src="https://img.shields.io/badge/Backend-Go%201.26-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go backend" />
-  <img src="https://img.shields.io/badge/WebUI-React%2019-61DAFB?style=for-the-badge&logo=react&logoColor=111827" alt="React WebUI" />
-  <img src="https://img.shields.io/badge/Docker-amd64%20%7C%20arm64-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker multi-arch" />
-</p>
+<div align="center">
+  <a href="https://github.com/YuJunZhiXue/qwen2API">
+    <img src="https://img.shields.io/badge/Qwen-2API-1677ff?style=for-the-badge&logo=alibabacloud&logoColor=white" alt="qwen2API" height="80">
+  </a>
 
-<p align="center">
-  <b>Self-hosted Qwen Web protocol gateway</b><br />
-  OpenAI / Anthropic / Gemini compatible APIs, account pool, WebUI, file context, image generation, and video generation.
-</p>
+  <h1>qwen2API</h1>
 
-<p align="center">
-  <a href="./README_CN.md">简体中文</a>
-  ·
-  <a href="https://hub.docker.com/r/yujunzhixue/qwen2api">Docker Hub</a>
-  ·
-  <a href="https://github.com/YuJunZhiXue/qwen2API">GitHub</a>
-  ·
-  <a href="https://t.me/qwen2api">Telegram</a>
-</p>
+  <p>
+    Self-hosted Qwen Web protocol gateway with OpenAI, Anthropic, and Gemini compatible APIs.
+  </p>
 
-## I. Project Overview
+  <p>
+    <a href="https://github.com/YuJunZhiXue/qwen2API">GitHub</a> ·
+    <a href="https://hub.docker.com/r/yujunzhixue/qwen2api">Docker Hub</a> ·
+    <a href="https://t.me/qwen2api">Telegram</a> ·
+    <a href="./README_CN.md">中文说明</a>
+  </p>
 
-qwen2API converts Qwen Web capabilities into common API protocols and provides a local WebUI for account, API key, runtime, image, and video management.
+  <p>
+    <a href="https://github.com/YuJunZhiXue/qwen2API/releases">
+      <img src="https://img.shields.io/github/v/release/YuJunZhiXue/qwen2API?logo=github&label=Version&style=flat-square" alt="Release">
+    </a>
+    <a href="https://github.com/YuJunZhiXue/qwen2API/stargazers">
+      <img src="https://img.shields.io/github/stars/YuJunZhiXue/qwen2API?logo=github&style=flat-square&label=Stars" alt="Stars">
+    </a>
+    <a href="https://hub.docker.com/r/yujunzhixue/qwen2api">
+      <img src="https://img.shields.io/badge/Docker%20Hub-yujunzhixue%2Fqwen2api-2496ED?logo=docker&style=flat-square" alt="Docker Hub">
+    </a>
+    <img src="https://img.shields.io/badge/Backend-Go%201.26-00ADD8?logo=go&style=flat-square" alt="Go">
+    <img src="https://img.shields.io/badge/WebUI-React%2019-61DAFB?logo=react&style=flat-square" alt="React">
+    <img src="https://img.shields.io/badge/License-GPL--3.0-blue?style=flat-square" alt="License">
+  </p>
+</div>
+
+## 一、项目简介 / Project Overview
+
+qwen2API converts Qwen Web capabilities into common API protocols and provides a local WebUI for account management, downstream API keys, runtime settings, model tests, image tests, and video tests.
+
+> [!NOTE]
+> `v1.0` was the legacy Python + FastAPI implementation. `v2.0` is the current Go backend + React WebUI mainline and is the recommended version for Docker and local deployments.
+
+### 1. Feature Map
+
+| Area | Capability |
+| --- | --- |
+| OpenAI-compatible APIs | `/v1/chat/completions`, `/v1/responses`, `/v1/models`, `/v1/files`, `/v1/images/generations`, `/v1/videos/generations` |
+| Anthropic-compatible APIs | `/v1/messages`, `/anthropic/v1/messages`, `/v1/messages/count_tokens` |
+| Gemini-compatible APIs | `/v1beta/models/{model}:generateContent`, `/v1beta/models/{model}:streamGenerateContent` |
+| WebUI | Accounts, API keys, runtime config, chat test, image test, video test |
+| Account pool | Multi-account rotation, per-account concurrency, separate chat/image/video cooldown tracking |
+| Operations | `/healthz`, `/readyz`, `/keepalive`, Docker healthcheck, multi-arch image publishing |
+
+### 2. Version Line
 
 | Version | Stack | Status |
-|---|---|---|
-| `v1.0` | Python + FastAPI/Uvicorn | Legacy implementation, kept only as historical context. |
-| `v2.0` | Go backend + React WebUI | Current mainline, faster startup, simpler runtime, Docker-first deployment. |
+| --- | --- | --- |
+| `v1.0` | Python + FastAPI/Uvicorn | Legacy version, kept only as historical context |
+| `v2.0` | Go backend + React WebUI | Current mainline |
 
-Main capabilities:
+## 二、快速部署 / Quick Deployment
 
-- OpenAI-compatible endpoints: `/v1/chat/completions`, `/v1/responses`, `/v1/models`, `/v1/files`, `/v1/images/generations`, `/v1/videos/generations`.
-- Anthropic-compatible endpoints: `/v1/messages`, `/anthropic/v1/messages`, `/v1/messages/count_tokens`.
-- Gemini-compatible endpoints: `/v1beta/models/{model}:generateContent`, `/v1beta/models/{model}:streamGenerateContent`.
-- WebUI management for Qwen accounts, downstream API keys, runtime settings, model tests, image tests, and video tests.
-- Multi-account pool with per-account concurrency controls and separate chat/image/video rate-limit cooldowns.
-- Runtime probes: `/healthz`, `/readyz`, `/keepalive`.
+### 1. Pull From Docker Hub
 
-## II. Architecture
-
-```mermaid
-flowchart LR
-  subgraph Clients["API Clients"]
-    OpenAI["OpenAI SDK / Chat Completions"]
-    Anthropic["Claude / Anthropic Messages"]
-    Gemini["Gemini-compatible clients"]
-    CLI["Claude Code / Codex / other CLI tools"]
-  end
-
-  subgraph App["qwen2API v2.0"]
-    WebUI["React WebUI"]
-    Router["Go HTTP Router"]
-    Adapter["Protocol Adapters"]
-    Tools["Tool-call / Context Pipeline"]
-    Pool["Qwen Account Pool"]
-    Store["JSON Stores / Data Files"]
-  end
-
-  subgraph Runtime["Runtime"]
-    Docker["Docker image"]
-    Data["./data volume"]
-    Logs["./logs volume"]
-  end
-
-  Qwen["Qwen Web Upstream"]
-
-  OpenAI --> Router
-  Anthropic --> Router
-  Gemini --> Router
-  CLI --> Router
-  WebUI --> Router
-  Router --> Adapter
-  Adapter --> Tools
-  Tools --> Pool
-  Pool --> Qwen
-  Pool --> Store
-  Store --> Data
-  Router --> Logs
-  Docker --> App
-```
-
-Runtime path rules:
-
-- Docker stores data inside the container at `/app/data` and logs at `/app/logs`.
-- The default compose file maps those paths to `./data` and `./logs` in your current host directory.
-- For local non-Docker runs, empty path environment variables fall back to the current project directory.
-
-## III. Docker Deployment
-
-### 1. Pull From Docker Hub With Compose
-
-This is the recommended server deployment path. Create a directory, write a compose YAML that points to the Docker Hub image, pull the image, then start it.
+The Docker Hub deployment should use a compose YAML file. Create a clean runtime directory, write `.env`, write `docker-compose.yml`, pull the image, then start the service.
 
 ```bash
 mkdir qwen2api
@@ -108,7 +77,7 @@ Create `.env`:
 HOST_PORT=7860
 HOST_DATA_DIR=./data
 HOST_LOGS_DIR=./logs
-ADMIN_KEY=change-this-to-a-strong-random-key
+ADMIN_KEY=replace-with-your-own-strong-random-key
 ```
 
 Create `docker-compose.yml`:
@@ -166,7 +135,7 @@ Open:
 
 ### 2. Build Locally With Docker
 
-Use this when you changed the source code and want to run your own local image.
+Use this path when you changed the source code and need to build your own image.
 
 ```bash
 git clone https://github.com/YuJunZhiXue/qwen2API.git
@@ -176,21 +145,78 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml build
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d
 ```
 
-### 3. Publish Docker Images With GitHub Actions
+### 3. Publish Images With GitHub Actions
 
 The repository includes `.github/workflows/docker-publish.yml`.
 
-- Push to `main`: builds `latest` and `sha-*`.
-- Push `v*.*.*` tags: builds semver tags.
-- Pushes to GHCR by default: `ghcr.io/yujunzhixue/qwen2api`.
-- Also pushes to Docker Hub when `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets are configured.
+| Trigger | Result |
+| --- | --- |
+| Push to `main` | Builds `latest` and `sha-*` images |
+| Push `v*.*.*` tags | Builds semantic version tags |
+| Default registry | Publishes to `ghcr.io/yujunzhixue/qwen2api` |
+| Docker Hub enabled | Also publishes to `yujunzhixue/qwen2api` when `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets exist |
 
-## IV. Configuration
+## 三、架构与配置 / Architecture and Configuration
+
+### 1. Runtime Architecture
+
+```mermaid
+flowchart LR
+  subgraph Clients["API Clients"]
+    OpenAI["OpenAI SDK / Chat Completions"]
+    Anthropic["Claude / Anthropic Messages"]
+    Gemini["Gemini-compatible clients"]
+    CLI["Claude Code / Codex / other CLI tools"]
+  end
+
+  subgraph App["qwen2API v2.0"]
+    WebUI["React WebUI"]
+    Router["Go HTTP Router"]
+    Adapter["Protocol Adapters"]
+    Tools["Tool-call / Context Pipeline"]
+    Pool["Qwen Account Pool"]
+    Store["JSON Stores / Data Files"]
+  end
+
+  subgraph Runtime["Runtime"]
+    Docker["Docker image"]
+    Data["./data volume"]
+    Logs["./logs volume"]
+  end
+
+  Qwen["Qwen Web Upstream"]
+
+  OpenAI --> Router
+  Anthropic --> Router
+  Gemini --> Router
+  CLI --> Router
+  WebUI --> Router
+  Router --> Adapter
+  Adapter --> Tools
+  Tools --> Pool
+  Pool --> Qwen
+  Pool --> Store
+  Store --> Data
+  Router --> Logs
+  Docker --> App
+```
+
+### 2. Runtime Paths
+
+| Runtime | Data Path | Logs Path |
+| --- | --- | --- |
+| Docker container | `/app/data` | `/app/logs` |
+| Docker host default | `./data` | `./logs` |
+| Local non-Docker default | current project `data` directory | current project `logs` directory |
+
+For Docker, the container always uses `/app/data` and `/app/logs`; the host path is controlled only by compose volume mappings. For local non-Docker runs, leave path environment variables empty to use the current project directory.
+
+### 3. Environment Variables
 
 Do not commit real secrets. `.env.example` intentionally contains empty values and commented examples only.
 
 | Variable | Description |
-|---|---|
+| --- | --- |
 | `ADMIN_KEY` | WebUI and `/api/admin/*` management key. Set a strong private value. |
 | `QWEN_API_KEY`, `QWEN_API_KEYS`, `QWEN_API_KEY_N` | Runtime-only downstream API keys injected from env. They are not saved to `data/api_keys.json` and cannot be deleted from WebUI. |
 | `QWEN_ACCOUNT_N` | Runtime-only upstream Qwen account, format `token;optional-email;optional-password`. It is not saved to `data/accounts.json`. |
@@ -198,15 +224,17 @@ Do not commit real secrets. `.env.example` intentionally contains empty values a
 | `HOST_DATA_DIR`, `HOST_LOGS_DIR` | Host paths mounted into Docker as `/app/data` and `/app/logs`. Defaults are `./data` and `./logs`. |
 | `DATA_DIR`, `LOGS_DIR` | Local non-Docker path overrides. Leave empty to use the current project directory. |
 
-Default data files:
+### 4. Default Data Files
 
-- `data/accounts.json`: Qwen accounts added from WebUI.
-- `data/api_keys.json`: downstream API keys created from WebUI.
-- `data/config.json`: runtime settings such as keepalive config.
-- `data/context_files/`: generated context files.
-- `logs/`: runtime logs.
+| File or Directory | Purpose |
+| --- | --- |
+| `data/accounts.json` | Qwen accounts added from WebUI |
+| `data/api_keys.json` | Downstream API keys created from WebUI |
+| `data/config.json` | Runtime settings such as keepalive config |
+| `data/context_files/` | Generated context files |
+| `logs/` | Runtime logs |
 
-## V. Development Guide
+## 四、开发指南 / Development Guide
 
 ### 1. Requirements
 
@@ -253,34 +281,58 @@ npm run build
 
 ### 5. Development Rules
 
-- Keep the Go backend as the v2.0 runtime source of truth.
-- Do not reintroduce Python/FastAPI runtime files into the Go mainline.
-- Keep Docker data paths container-internal as `/app/data` and `/app/logs`; host paths should be controlled by compose volume mappings.
+- Keep the Go backend as the `v2.0` runtime source of truth.
+- Keep Docker data paths container-internal as `/app/data` and `/app/logs`.
+- Control host paths through compose volume mappings instead of hard-coded workspace paths.
 - Do not commit `data/`, `logs/`, `.env`, real tokens, cookies, passwords, or downstream API keys.
 - Update README and `.env.example` when adding user-visible configuration.
 
-## VI. Contribution
+## 五、参与贡献 / Contribution
 
-Contributions are welcome.
+### 1. How to Contribute
 
-- Report bugs through GitHub Issues.
-- Submit feature requests through GitHub Issues.
-- Open pull requests for fixes and improvements.
-- Keep changes focused and include verification steps when possible.
+- Report bugs through [GitHub Issues](https://github.com/YuJunZhiXue/qwen2API/issues).
+- Submit feature requests through [GitHub Issues](https://github.com/YuJunZhiXue/qwen2API/issues).
+- Open focused pull requests through [GitHub Pull Requests](https://github.com/YuJunZhiXue/qwen2API/pulls).
+- Include practical verification steps when possible.
 
-Recommended pull request checklist:
+### 2. Pull Request Checklist
 
 - `go test ./...` passes in `backend`.
 - `npm run build` passes in `frontend`.
-- Docker-related changes are reflected in `Dockerfile`, `docker-compose.yml`, and documentation.
-- No generated data, logs, or secrets are included.
+- Docker-related changes are reflected in `Dockerfile`, `docker-compose.yml`, `.github/workflows/docker-publish.yml`, and README when needed.
+- No generated data, logs, local `.env`, Qwen token, cookie, password, or downstream API key is included.
 
-## VII. Other Information
+### 3. Contributors
 
-### License
+Thanks to everyone who helps improve qwen2API.
 
-GPL-3.0
+[![Contributors](https://contrib.rocks/image?repo=YuJunZhiXue/qwen2API)](https://github.com/YuJunZhiXue/qwen2API/graphs/contributors)
 
-### Acknowledgements
+## 六、其他信息 / Other Information
+
+### 1. Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=YuJunZhiXue/qwen2API&type=Timeline)](https://www.star-history.com/#YuJunZhiXue/qwen2API&Timeline)
+
+### 2. License
+
+This project is released under the [GPL-3.0 License](./LICENSE).
+
+### 3. Disclaimer
+
+- This project is provided as an open-source self-hosted gateway.
+- Review your local laws, platform rules, and upstream account policies before deployment.
+- Do not publish or share real account tokens, cookies, passwords, or downstream API keys.
+- If you find a security issue, please avoid public secret disclosure and report it through a private channel first.
+
+### 4. Acknowledgements
 
 - 特别鸣谢: [LinuxDo](https://linux.do/)
+
+---
+
+<div align="center">
+  <p>If qwen2API helps you, consider giving the project a Star.</p>
+  <p>Made by <a href="https://github.com/YuJunZhiXue">YuJunZhiXue</a> and contributors.</p>
+</div>
