@@ -41,6 +41,12 @@ frontend/dist/
 frontend/.vite/
 frontend/.turbo/
 
+# Go/local build outputs
+bin/
+backend/*.exe
+backend/*.exe~
+backend/*.test
+
 # IDE
 .vscode/
 .idea/
@@ -62,6 +68,12 @@ TOOL_*.md
 tests/
 test_*.py
 *_test.py
+claude_code_tool_stress_sandbox/
+hermes_tool_stress_sandbox*/
+openclaw_tool_stress_sandbox*/
+.openclaw/
+Hermes/
+工具链长任务ifacts/
 
 # 其他
 .dockerignore

@@ -165,14 +165,17 @@ export default function ImagePage() {
   }
 
   return (
-    <div className="space-y-6 max-w-5xl">
-      <div>
-        <h2 className="text-2xl font-bold tracking-tight">图片生成</h2>
-        <p className="text-muted-foreground">选择图片模型生成 AI 图片，支持多种比例。</p>
-      </div>
+    <div className="w-full space-y-6">
+      <section className="admin-hero p-6">
+        <div className="relative z-10">
+          <div className="text-xs font-black uppercase tracking-[0.28em] text-muted-foreground">Image Lab</div>
+          <h2 className="mt-2 text-4xl font-black tracking-tight">图片生成</h2>
+          <p className="mt-2 text-muted-foreground">选择图片模型生成 AI 图片，支持比例、尺寸检测和批量结果管理。</p>
+        </div>
+      </section>
 
       {/* 输入区域 */}
-      <div className="rounded-xl border bg-card shadow-sm p-6 space-y-4">
+      <div className="admin-card p-6 space-y-4">
         <div className="space-y-2">
           <label className="text-sm font-medium">图片描述 (Prompt)</label>
           <textarea
@@ -180,7 +183,7 @@ export default function ImagePage() {
             value={prompt}
             onChange={e => setPrompt(e.target.value)}
             placeholder="描述你想生成的图片，例如：赛博朋克风格的猫咪，霓虹灯背景，超写实风格"
-            className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="admin-input flex w-full px-3 py-2 text-sm resize-none"
             disabled={loading}
             onKeyDown={e => {
               if (e.key === "Enter" && e.ctrlKey) handleGenerate()
@@ -195,7 +198,7 @@ export default function ImagePage() {
             <select
               value={model}
               onChange={e => setModel(e.target.value)}
-              className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="admin-input h-10 w-full px-3 py-2 text-sm font-mono"
               disabled={loading}
             >
               {groupedModels.map(group => (
@@ -219,7 +222,7 @@ export default function ImagePage() {
                   className={`px-3 py-1.5 rounded-md text-sm font-medium border transition-all ${
                     ratio === r.value
                       ? "bg-primary text-primary-foreground border-primary shadow-sm"
-                      : "bg-background border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
+                      : "bg-background/70 border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
                   }`}
                   disabled={loading}
                 >
@@ -240,7 +243,7 @@ export default function ImagePage() {
                   className={`px-3 py-1.5 rounded-md text-sm font-medium border transition-all ${
                     n === v
                       ? "bg-primary text-primary-foreground border-primary shadow-sm"
-                      : "bg-background border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
+                      : "bg-background/70 border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
                   }`}
                   disabled={loading}
                 >
@@ -251,7 +254,7 @@ export default function ImagePage() {
           </div>
 
           {/* 尺寸预览 */}
-          <div className="text-xs text-muted-foreground font-mono bg-muted/50 border rounded-md px-2 py-1">
+          <div className="admin-chip font-mono">
             {sizeStr}
           </div>
 
@@ -278,7 +281,7 @@ export default function ImagePage() {
 
       {/* 加载状态占位 */}
       {loading && (
-        <div className="rounded-xl border bg-card shadow-sm p-8">
+        <div className="admin-card p-8">
           <div className="flex flex-col items-center justify-center gap-4 text-muted-foreground">
             <div className="relative">
               <ImageIcon className="h-16 w-16 text-muted-foreground/20" />
@@ -303,7 +306,7 @@ export default function ImagePage() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {images.map((img, idx) => (
-              <div key={`${img.url}-${idx}`} className="rounded-xl border bg-card shadow-sm overflow-hidden group">
+              <div key={`${img.url}-${idx}`} className="admin-card overflow-hidden group">
                 <div className="relative bg-muted/30">
                   <img
                     src={img.url}
@@ -341,10 +344,10 @@ export default function ImagePage() {
                 </div>
                 <div className="p-3 space-y-1">
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <span className="bg-muted rounded px-1.5 py-0.5 font-mono">{img.ratio}</span>
-                    <span className="bg-muted rounded px-1.5 py-0.5 font-mono">请求 {img.size}</span>
-                    {img.model && <span className="bg-muted rounded px-1.5 py-0.5 font-mono">{img.model}</span>}
-                    <span className="bg-muted rounded px-1.5 py-0.5 font-mono">实际 {formatActualSize(img)}</span>
+                    <span className="admin-chip font-mono">{img.ratio}</span>
+                    <span className="admin-chip font-mono">请求 {img.size}</span>
+                    {img.model && <span className="admin-chip font-mono">{img.model}</span>}
+                    <span className="admin-chip font-mono">实际 {formatActualSize(img)}</span>
                     <span className="truncate">{img.revised_prompt.slice(0, 80)}</span>
                   </div>
                   {getRatioStatus(img) && (
@@ -362,7 +365,7 @@ export default function ImagePage() {
 
       {/* 空状态 */}
       {images.length === 0 && !loading && (
-        <div className="rounded-xl border bg-card/50 shadow-sm p-12">
+        <div className="admin-card p-12">
           <div className="flex flex-col items-center gap-4 text-muted-foreground">
             <ImageIcon className="h-16 w-16 text-muted-foreground/20" />
             <div className="text-center">

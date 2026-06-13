@@ -5,26 +5,15 @@ services:
     restart: unless-stopped
     init: true
     env_file:
-      - path: .env
-        required: false
+      - .env
     ports:
-      - "${HOST_PORT:-7860}:7860"
+      - "${HOST_PORT:-7860}:${PORT:-7860}"
     volumes:
-      - ./data:/workspace/data
-      - ./logs:/workspace/logs
+      - ${HOST_DATA_DIR:-./data}:/app/data
+      - ${HOST_LOGS_DIR:-./logs}:/app/logs
     shm_size: "512m"
-    environment:
-      PYTHONIOENCODING: utf-8
-      PORT: "7860"
-      WORKERS: "1"
-      LOG_LEVEL: "INFO"
-      BROWSER_POOL_SIZE: "1"
-      MAX_INFLIGHT_PER_ACCOUNT: "2"
-      ACCOUNT_MIN_INTERVAL_MS: "0"
-      REQUEST_JITTER_MIN_MS: "0"
-      REQUEST_JITTER_MAX_MS: "0"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7860/healthz || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${PORT:-7860}/healthz || exit 1"]
       interval: 30s
       timeout: 10s
       start_period: 120s

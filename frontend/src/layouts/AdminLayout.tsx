@@ -1,74 +1,132 @@
 import { Outlet, Link, useLocation } from "react-router-dom"
-import { Activity, Key, Settings, LayoutDashboard, MessageSquare, Menu, X, Image, Video } from "lucide-react"
+import {
+  Activity,
+  Image,
+  Key,
+  LayoutDashboard,
+  Menu,
+  MessageSquare,
+  Settings,
+  Video,
+  X,
+} from "lucide-react"
 import { useState } from "react"
+
+const navItems = [
+  { name: "运行状态", path: "/", icon: LayoutDashboard },
+  { name: "账号管理", path: "/accounts", icon: Activity },
+  { name: "API Key", path: "/tokens", icon: Key },
+  { name: "接口测试", path: "/test", icon: MessageSquare },
+  { name: "图片生成", path: "/images", icon: Image },
+  { name: "视频生成", path: "/videos", icon: Video },
+  { name: "系统设置", path: "/settings", icon: Settings },
+]
 
 export default function AdminLayout() {
   const loc = useLocation()
   const [mobileOpen, setMobileOpen] = useState(false)
-
-  const navs = [
-    { name: "运行状态", path: "/", icon: LayoutDashboard },
-    { name: "账号管理", path: "/accounts", icon: Activity },
-    { name: "API Key", path: "/tokens", icon: Key },
-    { name: "接口测试", path: "/test", icon: MessageSquare },
-    { name: "图片生成", path: "/images", icon: Image },
-    { name: "视频生成", path: "/videos", icon: Video },
-    { name: "系统设置", path: "/settings", icon: Settings },
-  ]
+  const activeItem = navItems.find(item => item.path === loc.pathname) || navItems[0]
 
   return (
-    <div className="flex min-h-screen w-full bg-background text-foreground transition-colors duration-300">
-      {/* Mobile sidebar backdrop */}
+    <div className="relative flex h-screen w-full overflow-hidden text-foreground">
+      <div className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(circle_at_15%_10%,hsl(var(--card)/0.9),transparent_28rem),radial-gradient(circle_at_92%_12%,hsl(var(--accent)/0.34),transparent_24rem)]" />
+
       {mobileOpen && (
-        <div 
-          className="fixed inset-0 bg-black/20 dark:bg-black/50 z-40 md:hidden backdrop-blur-sm transition-opacity"
+        <div
+          className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm md:hidden"
           onClick={() => setMobileOpen(false)}
         />
       )}
 
-      <aside className={`fixed md:static inset-y-0 left-0 w-64 flex-col border-r border-border/40 bg-card/90 md:bg-card/50 backdrop-blur-xl flex z-50 shadow-2xl shadow-black/5 dark:shadow-black/50 transition-transform duration-300 ${
-        mobileOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
-      }`}>
-        <div className="h-16 flex items-center justify-between px-6 border-b border-border/40">
-          <div className="font-extrabold text-xl tracking-tight bg-gradient-to-br from-indigo-500 to-purple-500 bg-clip-text text-transparent">qwen2API</div>
-          <button className="md:hidden text-muted-foreground hover:text-foreground transition-colors" onClick={() => setMobileOpen(false)}>
-            <X className="h-5 w-5" />
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 flex h-screen w-[16.5rem] flex-col border-r border-white/70 bg-card/92 shadow-[var(--shadow-lift)] backdrop-blur-2xl transition-transform duration-300 md:relative md:inset-auto md:translate-x-0 ${
+          mobileOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        <div className="flex h-20 items-center justify-between border-b border-border/45 px-6">
+          <Link to="/" onClick={() => setMobileOpen(false)} className="group min-w-0">
+            <div className="text-[11px] font-black uppercase tracking-[0.32em] text-muted-foreground">Go Gateway</div>
+            <div className="mt-1 truncate text-2xl font-black tracking-tight transition group-hover:text-primary">qwen2API</div>
+          </Link>
+          <button
+            type="button"
+            className="rounded-full border border-white/70 bg-card/70 p-2 text-muted-foreground shadow-sm md:hidden"
+            onClick={() => setMobileOpen(false)}
+            aria-label="关闭导航"
+          >
+            <X className="size-5" />
           </button>
         </div>
-        <nav className="flex-1 space-y-2 p-4">
-          {navs.map(n => {
-            const active = loc.pathname === n.path
+
+        <nav className="flex-1 space-y-2 overflow-y-auto p-4">
+          {navItems.map(item => {
+            const active = loc.pathname === item.path
             return (
               <Link
-                key={n.path}
-                to={n.path}
+                key={item.path}
+                to={item.path}
                 onClick={() => setMobileOpen(false)}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-300 ${
-                  active 
-                  ? "bg-primary/10 text-primary shadow-[inset_0_1px_0_0_rgba(0,0,0,0.05)] dark:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.1)] ring-1 ring-primary/20" 
-                  : "text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5 hover:text-foreground"
+                className={`group flex items-center gap-3 whitespace-nowrap rounded-2xl border px-4 py-3 text-sm font-bold transition ${
+                  active
+                    ? "border-primary/10 bg-primary text-primary-foreground shadow-[0_18px_34px_-24px_hsl(var(--primary)/0.85)]"
+                    : "border-transparent text-muted-foreground hover:border-white/75 hover:bg-card/75 hover:text-foreground hover:shadow-sm"
                 }`}
               >
-                <n.icon className={`h-4 w-4 ${active ? "drop-shadow-[0_0_8px_rgba(168,85,247,0.5)]" : ""}`} />
-                {n.name}
+                <span
+                  className={`grid size-9 shrink-0 place-items-center rounded-xl transition ${
+                    active ? "bg-primary-foreground/12" : "bg-muted/45 group-hover:bg-accent/55"
+                  }`}
+                >
+                  <item.icon className="size-4" />
+                </span>
+                <span className="truncate">{item.name}</span>
               </Link>
             )
           })}
         </nav>
-      </aside>
 
-      <main className="flex-1 flex flex-col overflow-hidden relative">
-        <header className="h-16 flex items-center justify-between px-6 border-b border-border/40 bg-card/80 backdrop-blur-xl md:hidden z-10 shadow-sm">
-           <div className="font-extrabold text-lg bg-gradient-to-br from-indigo-500 to-purple-500 bg-clip-text text-transparent">qwen2API</div>
-           <button className="text-muted-foreground hover:text-foreground transition-colors" onClick={() => setMobileOpen(true)}>
-             <Menu className="h-6 w-6" />
-           </button>
-        </header>
-        <div className="flex-1 p-6 md:p-8 overflow-y-auto overflow-x-hidden z-0">
-          <div className="max-w-6xl mx-auto min-w-0 animate-fade-in-up">
-            <Outlet />
+        <div className="border-t border-border/45 p-4">
+          <div className="rounded-[24px] border border-white/70 bg-muted/22 p-4 shadow-sm">
+            <div className="flex items-center gap-2 text-xs font-black text-muted-foreground">
+              <span className="size-2 rounded-full bg-accent" />
+              Go 后端运行
+            </div>
+            <div className="mt-2 text-sm leading-6 text-muted-foreground">
+              保持原版管理入口，前端只展示必要页面。
+            </div>
           </div>
         </div>
+      </aside>
+
+      <main className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-white/70 bg-card/76 px-4 shadow-sm backdrop-blur-xl md:h-20 md:px-8">
+          <div className="flex min-w-0 items-center gap-3">
+            <button
+              type="button"
+              className="rounded-full border border-white/70 bg-card/70 p-2 text-muted-foreground shadow-sm md:hidden"
+              onClick={() => setMobileOpen(true)}
+              aria-label="打开导航"
+            >
+              <Menu className="size-5" />
+            </button>
+            <div className="min-w-0">
+              <div className="text-[11px] font-black uppercase tracking-[0.24em] text-muted-foreground">Admin Console</div>
+              <h1 className="truncate text-xl font-black tracking-tight md:text-2xl">{activeItem.name}</h1>
+            </div>
+          </div>
+          <div className="hidden items-center gap-2 lg:flex">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-white/75 bg-card/70 px-3 py-1 text-xs font-bold text-muted-foreground shadow-sm">
+              <span className="size-1.5 rounded-full bg-accent" />
+              qwen2API
+            </span>
+          </div>
+        </header>
+
+        <section className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-6">
+          <div className="min-w-0 animate-fade-in-up">
+            <Outlet />
+          </div>
+        </section>
       </main>
     </div>
   )

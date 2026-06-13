@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
+import { createPortal } from "react-dom"
 import { Button } from "../components/ui/button"
-import { Send, RefreshCw, Bot, Brain, Zap } from "lucide-react"
+import { Check, ChevronDown, Send, RefreshCw, Bot, Brain, Zap } from "lucide-react"
 import { getAuthHeader } from "../lib/auth"
 import { API_BASE } from "../lib/api"
 import { toast } from "sonner"
@@ -56,8 +57,14 @@ function MessageContent({ content }: { content: string }) {
 }
 
 type ChatMessage = { role: string; content: string; reasoning?: string; error?: boolean }
+type ModelMenuStyle = { left: number; top: number; width: number; maxHeight: number }
 const TYPEWRITER_CHUNK_SIZE = 2
 const TYPEWRITER_DELAY_MS = 24
+const MODEL_MENU_EDGE_GAP = 16
+const MODEL_MENU_TRIGGER_GAP = 8
+const MODEL_MENU_MAX_WIDTH = 760
+const MODEL_MENU_MAX_HEIGHT = 448
+const MODEL_MENU_MIN_HEIGHT = 220
 
 function asText(value: unknown): string {
   return typeof value === "string" ? value : ""
@@ -172,12 +179,69 @@ export default function TestPage() {
   const [stream, setStream] = useState(true)
   const [answerMode, setAnswerMode] = useState<"thinking" | "fast">("thinking")
   const bottomRef = useRef<HTMLDivElement>(null)
+  const modelPickerRef = useRef<HTMLDivElement>(null)
+  const modelMenuRef = useRef<HTMLDivElement>(null)
+  const [modelMenuOpen, setModelMenuOpen] = useState(false)
+  const [modelMenuStyle, setModelMenuStyle] = useState<ModelMenuStyle | null>(null)
   const groupedModels = groupModelOptions(availableModels)
+  const selectedModel = availableModels.find(item => item.id === model)
+  const selectedModelLabel = selectedModel ? formatModelOptionLabel(selectedModel) : model
   const selectedForcesThinking = isThinkingVariant(model)
+
+  const updateModelMenuPosition = () => {
+    const trigger = modelPickerRef.current?.querySelector("button")
+    if (!trigger) return
+
+    const rect = trigger.getBoundingClientRect()
+    const viewportWidth = window.innerWidth
+    const viewportHeight = window.innerHeight
+    const availableWidth = Math.max(280, viewportWidth - MODEL_MENU_EDGE_GAP * 2)
+    const width = Math.min(MODEL_MENU_MAX_WIDTH, availableWidth)
+    const left = Math.min(
+      Math.max(MODEL_MENU_EDGE_GAP, rect.right - width),
+      viewportWidth - width - MODEL_MENU_EDGE_GAP,
+    )
+    const downSpace = viewportHeight - rect.bottom - MODEL_MENU_EDGE_GAP - MODEL_MENU_TRIGGER_GAP
+    const upSpace = rect.top - MODEL_MENU_EDGE_GAP - MODEL_MENU_TRIGGER_GAP
+    const openUp = downSpace < MODEL_MENU_MIN_HEIGHT && upSpace > downSpace
+    const availableHeight = Math.max(MODEL_MENU_MIN_HEIGHT, openUp ? upSpace : downSpace)
+    const maxHeight = Math.min(MODEL_MENU_MAX_HEIGHT, availableHeight)
+    const top = openUp
+      ? Math.max(MODEL_MENU_EDGE_GAP, rect.top - maxHeight - MODEL_MENU_TRIGGER_GAP)
+      : rect.bottom + MODEL_MENU_TRIGGER_GAP
+
+    setModelMenuStyle({ left, top, width, maxHeight })
+  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages])
+
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (!modelPickerRef.current?.contains(target) && !modelMenuRef.current?.contains(target)) {
+        setModelMenuOpen(false)
+      }
+    }
+    document.addEventListener("pointerdown", onPointerDown)
+    return () => document.removeEventListener("pointerdown", onPointerDown)
+  }, [])
+
+  useEffect(() => {
+    if (!modelMenuOpen) {
+      setModelMenuStyle(null)
+      return
+    }
+
+    updateModelMenuPosition()
+    window.addEventListener("resize", updateModelMenuPosition)
+    window.addEventListener("scroll", updateModelMenuPosition, true)
+    return () => {
+      window.removeEventListener("resize", updateModelMenuPosition)
+      window.removeEventListener("scroll", updateModelMenuPosition, true)
+    }
+  }, [modelMenuOpen, availableModels.length])
 
   // 接口测试只展示文本类模型，图片/视频等生成模型分流到独立页面。
   useEffect(() => {
@@ -417,43 +481,95 @@ export default function TestPage() {
   }
 
   return (
-    <div className="flex flex-col h-[calc(100vh-10rem)] space-y-4 max-w-5xl mx-auto">
-      <div className="flex flex-col gap-4 rounded-2xl border bg-card/80 p-4 shadow-sm backdrop-blur md:flex-row md:items-start md:justify-between">
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight">接口测试</h2>
-          <p className="text-muted-foreground">在此测试 API 分发、模型变体与思考模式是否正常工作。</p>
-        </div>
-        <div className="flex flex-col gap-3 md:items-end">
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <div className="flex items-center gap-2 rounded-xl border bg-background/70 px-3 py-2">
-              <span className="font-medium text-muted-foreground">模型</span>
-              <select value={model} onChange={e => setModel(e.target.value)} className="max-w-[19rem] bg-transparent font-mono outline-none">
-                {groupedModels.map(group => (
-                  <optgroup key={group.family} label={group.family}>
-                    {group.models.map(option => (
-                      <option key={option.id} value={option.id}>{formatModelOptionLabel(option)}</option>
+    <div className="flex h-[calc(100vh-8rem)] w-full flex-col space-y-4">
+      <section className="admin-hero p-5">
+        <div className="relative z-10 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div>
+            <div className="text-xs font-black uppercase tracking-[0.28em] text-muted-foreground">Protocol Trial</div>
+            <h2 className="mt-2 text-4xl font-black tracking-tight">接口测试</h2>
+            <p className="mt-2 text-muted-foreground">测试 OpenAI 对话分发、模型变体、流式输出和思考模式。</p>
+          </div>
+          <div className="flex flex-col gap-3 md:items-end">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <div ref={modelPickerRef} className="relative">
+                <button
+                  type="button"
+                  data-testid="model-picker-trigger"
+                  onClick={() => {
+                    updateModelMenuPosition()
+                    setModelMenuOpen(open => !open)
+                  }}
+                  className="admin-input flex h-11 w-[22rem] max-w-[calc(100vw-2rem)] shrink-0 items-center gap-2 px-3 text-left"
+                >
+                  <span className="font-medium text-muted-foreground">模型</span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-sm">{selectedModelLabel}</span>
+                  <ChevronDown className={`size-4 shrink-0 text-muted-foreground transition ${modelMenuOpen ? "rotate-180" : ""}`} />
+                </button>
+                {modelMenuOpen && createPortal(
+                  <div
+                    ref={modelMenuRef}
+                    data-testid="model-picker-menu"
+                    className="fixed-select-menu fixed z-50 overflow-y-auto rounded-[24px] border border-white/75 bg-card/98 p-2 text-left shadow-[var(--shadow-lift)] backdrop-blur-xl"
+                    style={modelMenuStyle ?? undefined}
+                  >
+                    {groupedModels.map(group => (
+                      <div key={group.family} className="py-1">
+                        <div className="px-3 py-2 text-[11px] font-black uppercase tracking-[0.22em] text-muted-foreground">
+                          {group.family}
+                        </div>
+                        <div className="space-y-1">
+                          {group.models.map(option => {
+                            const label = formatModelOptionLabel(option)
+                            const active = option.id === model
+                            return (
+                              <button
+                                key={option.id}
+                                type="button"
+                                onClick={() => {
+                                  setModel(option.id)
+                                  setModelMenuOpen(false)
+                                }}
+                                className={`flex w-full items-start gap-3 rounded-2xl px-3 py-2.5 text-left transition ${
+                                  active ? "bg-primary text-primary-foreground" : "hover:bg-muted/60"
+                                }`}
+                              >
+                                <span className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border ${active ? "border-primary-foreground/50" : "border-border"}`}>
+                                  {active ? <Check className="size-3.5" /> : null}
+                                </span>
+                                <span className="min-w-0 flex-1">
+                                  <span className="block break-words [overflow-wrap:anywhere] font-mono text-sm leading-5">{label}</span>
+                                  <span className={`mt-1 block break-all [overflow-wrap:anywhere] text-xs ${active ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
+                                    {option.id}
+                                  </span>
+                                </span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
                     ))}
-                  </optgroup>
-                ))}
-              </select>
+                  </div>,
+                  document.body,
+                )}
+              </div>
+              <div
+                className="admin-input flex cursor-pointer items-center gap-2 px-3 py-2"
+                onClick={() => setStream(!stream)}
+              >
+                <input type="checkbox" checked={stream} onChange={() => {}} className="cursor-pointer" />
+                <span className="font-medium">流式传输</span>
+              </div>
+              <Button variant="outline" onClick={() => { setMessages([]); setInput("") }}>
+                <RefreshCw className="mr-2 h-4 w-4" /> 新建对话
+              </Button>
             </div>
-            <div
-              className="flex cursor-pointer items-center gap-2 rounded-xl border bg-background/70 px-3 py-2"
-              onClick={() => setStream(!stream)}
-            >
-              <input type="checkbox" checked={stream} onChange={() => {}} className="cursor-pointer" />
-              <span className="font-medium">流式传输</span>
-            </div>
-            <Button variant="outline" onClick={() => { setMessages([]); setInput("") }}>
-              <RefreshCw className="mr-2 h-4 w-4" /> 新建对话
-            </Button>
           </div>
         </div>
-      </div>
+      </section>
 
-      <div className="rounded-xl border bg-card/70 p-3 shadow-sm">
+      <div className="admin-card p-3">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div className="flex rounded-xl border bg-background/70 p-1">
+          <div className="admin-input flex p-1">
             <button
               type="button"
               onClick={() => setAnswerMode("thinking")}
@@ -480,7 +596,7 @@ export default function TestPage() {
         ) : null}
       </div>
 
-      <div className="flex-1 rounded-xl border bg-card overflow-hidden flex flex-col shadow-sm">
+      <div className="admin-card flex-1 overflow-hidden flex flex-col">
         <div className="flex-1 overflow-y-auto p-6 space-y-6 flex flex-col">
           {messages.length === 0 && (
             <div className="h-full flex flex-col items-center justify-center text-muted-foreground space-y-4">
@@ -523,13 +639,13 @@ export default function TestPage() {
           <div ref={bottomRef} />
         </div>
 
-        <div className="p-4 border-t bg-muted/30 flex gap-3 items-center">
+        <div className="p-4 border-t border-border/50 bg-muted/15 flex gap-3 items-center">
           <input
             type="text"
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => e.key === "Enter" && handleSend()}
-            className="flex h-12 w-full rounded-md border border-input bg-background px-4 py-2 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            className="admin-input flex h-12 w-full px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
             placeholder="输入测试消息..."
             disabled={loading}
           />

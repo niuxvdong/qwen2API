@@ -1,37 +1,51 @@
 # syntax=docker/dockerfile:1.7
 
-# Stage 1: Build frontend assets once on the build platform.
-FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS frontend-builder
-WORKDIR /app
+ARG GO_VERSION=1.26
+ARG NODE_VERSION=20
+
+# Stage 1: build the WebUI assets.
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm-slim AS frontend-builder
+WORKDIR /src/frontend
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# Stage 2: Runtime image.
-FROM python:3.12-slim-bookworm
-WORKDIR /workspace
+# Stage 2: build the Go backend.
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-bookworm AS backend-builder
+WORKDIR /src
+COPY backend/go.mod backend/go.sum ./backend/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    cd backend && go mod download
+COPY backend/ ./backend/
+ARG TARGETOS
+ARG TARGETARCH
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    cd backend && CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags="-s -w" -o /out/qwen2api .
+
+# Stage 3: runtime image.
+FROM debian:bookworm-slim
+WORKDIR /app
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONIOENCODING=utf-8 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
     PORT=7860 \
-    WORKERS=1 \
     LOG_LEVEL=INFO \
-    PYTHONPATH=/workspace
+    DATA_DIR=/app/data \
+    LOGS_DIR=/app/logs \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     wget \
+    unzip \
     libasound2 \
     libatk-bridge2.0-0 \
     libatk1.0-0 \
     libcups2 \
     libdbus-1-3 \
-    libdbus-glib-1-2 \
     libdrm2 \
     libgbm1 \
     libglib2.0-0 \
@@ -54,20 +68,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
-COPY backend/requirements.txt /tmp/requirements.txt
-RUN python -m pip install --upgrade pip && python -m pip install -r /tmp/requirements.txt
+COPY --from=backend-builder /out/qwen2api /usr/local/bin/qwen2api
+COPY --from=frontend-builder /src/frontend/dist ./frontend/dist
 
-# Download Camoufox browser at build time so runtime hosts do not need to fetch it again.
-RUN python -m camoufox fetch
-
-COPY backend/ ./backend/
-COPY start.py ./
-RUN mkdir -p /workspace/data /workspace/logs /workspace/frontend
-COPY --from=frontend-builder /app/dist ./frontend/dist
+RUN mkdir -p /app/data /app/logs /ms-playwright \
+    && /usr/local/bin/qwen2api --install-browsers
 
 EXPOSE 7860
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${PORT:-7860}/healthz" || exit 1
 
-CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-7860} --workers ${WORKERS:-1}"]
+CMD ["/usr/local/bin/qwen2api"]

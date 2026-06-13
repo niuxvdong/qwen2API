@@ -149,13 +149,16 @@ export default function VideoPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-5xl">
-      <div>
-        <h2 className="text-2xl font-bold tracking-tight">视频生成</h2>
-        <p className="text-muted-foreground">选择视频模型生成短视频，支持比例、时长和数量参数。</p>
-      </div>
+    <div className="w-full space-y-6">
+      <section className="admin-hero p-6">
+        <div className="relative z-10">
+          <div className="text-xs font-black uppercase tracking-[0.28em] text-muted-foreground">Video Lab</div>
+          <h2 className="mt-2 text-4xl font-black tracking-tight">视频生成</h2>
+          <p className="mt-2 text-muted-foreground">选择视频模型生成短视频，支持比例、时长、任务轮询和结果下载。</p>
+        </div>
+      </section>
 
-      <div className="rounded-xl border bg-card shadow-sm p-6 space-y-4">
+      <div className="admin-card p-6 space-y-4">
         <div className="space-y-2">
           <label className="text-sm font-medium">视频描述 (Prompt)</label>
           <textarea
@@ -163,7 +166,7 @@ export default function VideoPage() {
             value={prompt}
             onChange={e => setPrompt(e.target.value)}
             placeholder="描述你想生成的视频，例如：雨夜霓虹街头，一只黑猫慢慢穿过水洼，电影感镜头"
-            className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="admin-input flex w-full px-3 py-2 text-sm resize-none"
             disabled={loading}
             onKeyDown={e => {
               if (e.key === "Enter" && e.ctrlKey) handleGenerate()
@@ -178,7 +181,7 @@ export default function VideoPage() {
             <select
               value={model}
               onChange={e => setModel(e.target.value)}
-              className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="admin-input h-10 w-full px-3 py-2 text-sm font-mono"
               disabled={loading}
             >
               {groupedModels.map(group => (
@@ -201,7 +204,7 @@ export default function VideoPage() {
                   className={`px-3 py-1.5 rounded-md text-sm font-medium border transition-all ${
                     ratio === r.value
                       ? "bg-primary text-primary-foreground border-primary shadow-sm"
-                      : "bg-background border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
+                      : "bg-background/70 border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
                   }`}
                   disabled={loading}
                 >
@@ -221,7 +224,7 @@ export default function VideoPage() {
                   className={`px-3 py-1.5 rounded-md text-sm font-medium border transition-all ${
                     duration === v
                       ? "bg-primary text-primary-foreground border-primary shadow-sm"
-                      : "bg-background border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
+                      : "bg-background/70 border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
                   }`}
                   disabled={loading}
                 >
@@ -241,7 +244,7 @@ export default function VideoPage() {
                   className={`px-3 py-1.5 rounded-md text-sm font-medium border transition-all ${
                     n === v
                       ? "bg-primary text-primary-foreground border-primary shadow-sm"
-                      : "bg-background border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
+                      : "bg-background/70 border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
                   }`}
                   disabled={loading}
                 >
@@ -251,7 +254,7 @@ export default function VideoPage() {
             </div>
           </div>
 
-          <div className="text-xs text-muted-foreground font-mono bg-muted/50 border rounded-md px-2 py-1">
+          <div className="admin-chip font-mono">
             {sizeStr}
           </div>
 
@@ -275,7 +278,7 @@ export default function VideoPage() {
       </div>
 
       {loading && (
-        <div className="rounded-xl border bg-card shadow-sm p-8">
+        <div className="admin-card p-8">
           <div className="flex flex-col items-center justify-center gap-4 text-muted-foreground">
             <div className="relative">
               <Film className="h-16 w-16 text-muted-foreground/20" />
@@ -299,7 +302,7 @@ export default function VideoPage() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {videos.map((video, idx) => (
-              <div key={`${video.url}-${idx}`} className="rounded-xl border bg-card shadow-sm overflow-hidden group">
+              <div key={`${video.url}-${idx}`} className="admin-card overflow-hidden group">
                 <div className="relative bg-muted/30">
                   <video
                     src={video.url}
@@ -318,10 +321,10 @@ export default function VideoPage() {
                 </div>
                 <div className="p-3 space-y-1">
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <span className="bg-muted rounded px-1.5 py-0.5 font-mono">{video.ratio}</span>
-                    <span className="bg-muted rounded px-1.5 py-0.5 font-mono">{video.duration || duration}s</span>
-                    <span className="bg-muted rounded px-1.5 py-0.5 font-mono">请求 {video.size}</span>
-                    {video.model && <span className="bg-muted rounded px-1.5 py-0.5 font-mono">{video.model}</span>}
+                    <span className="admin-chip font-mono">{video.ratio}</span>
+                    <span className="admin-chip font-mono">{video.duration || duration}s</span>
+                    <span className="admin-chip font-mono">请求 {video.size}</span>
+                    {video.model && <span className="admin-chip font-mono">{video.model}</span>}
                     <span className="truncate">{video.revised_prompt.slice(0, 80)}</span>
                   </div>
                   <div className="text-xs text-muted-foreground font-mono truncate">{video.url}</div>
@@ -333,7 +336,7 @@ export default function VideoPage() {
       )}
 
       {videos.length === 0 && !loading && (
-        <div className="rounded-xl border bg-card/50 shadow-sm p-12">
+        <div className="admin-card p-12">
           <div className="flex flex-col items-center gap-4 text-muted-foreground">
             <VideoIcon className="h-16 w-16 text-muted-foreground/20" />
             <div className="text-center">
